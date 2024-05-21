@@ -1,8 +1,45 @@
 use crate::error::{Error, ToCodeExt as _};
+use bitflags::bitflags;
 use std::ffi::CStr;
 use vst3::Steinberg::{
-    kInvalidArgument, kPlatformTypeHIView, kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID, kResultTrue, Vst::{BusDirections_, IUnitHandler2Trait, IUnitHandlerTrait, MediaTypes_}
+    kInvalidArgument, kPlatformTypeHIView, kPlatformTypeHWND, kPlatformTypeNSView,
+    kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID, kResultTrue,
+    Vst::{BusDirections_, IUnitHandler2Trait, IUnitHandlerTrait, MediaTypes_, RestartFlags_},
 };
+
+bitflags! {
+    pub struct RestartFlags: i32 {
+        const RELOAD_COMPONENT = RestartFlags_::kReloadComponent as _;
+        const IO_CHANGED = RestartFlags_::kIoChanged as _;
+        const PARAM_VALUES_CHANGED = RestartFlags_::kParamValuesChanged as _;
+        const LATENCY_CHANGED = RestartFlags_::kLatencyChanged as _;
+        const PARAM_TITLES_CHANGED = RestartFlags_::kParamTitlesChanged as _;
+        const MIDI_CC_ASSIGNMENTS_CHANGED = RestartFlags_::kMidiCCAssignmentChanged as _;
+        const NOTE_EXPRESSION_CHANGED = RestartFlags_::kNoteExpressionChanged as _;
+        const IO_TITLES_CHANGED = RestartFlags_::kIoTitlesChanged as _;
+        const PREFETCHABLE_SUPPORT_CHANGED = RestartFlags_::kPrefetchableSupportChanged as _;
+        const ROUTING_INFO_CHANGED = RestartFlags_::kRoutingInfoChanged as _;
+        const KEYSWITCH_CHANGED = RestartFlags_::kKeyswitchChanged as _;
+    }
+}
+
+pub enum MediaType {
+    Audio,
+    Event,
+}
+
+pub enum BusDirection {
+    Input,
+    Output,
+}
+
+pub enum WindowType {
+    HIView,
+    HWND,
+    NSView,
+    UIView,
+    X11,
+}
 
 /// A `ComponentHandler` implementation must be passed to all plugin instances, and is used by the
 /// plugin to communicate back with the host. All methods are `&self` and `Self must be [Send] and
@@ -28,7 +65,7 @@ where
     }
 
     /// Called by the plugin to request the host terminate and reinitialize the component.
-    fn restart_component(&self, flags: i32) -> Result<(), Error> {
+    fn restart_component(&self, flags: RestartFlags) -> Result<(), Error> {
         Err(Error::NotImplemented)
     }
 
@@ -67,7 +104,7 @@ where
     }
 
     /// Called by the plugin when a program list has been updated.
-    fn notify_program_list_change(&self, list_id: i32, program_index: i32) -> Result<(), Error>{
+    fn notify_program_list_change(&self, list_id: i32, program_index: i32) -> Result<(), Error> {
         Err(Error::NotImplemented)
     }
 
@@ -80,23 +117,6 @@ where
     fn notify_unit_by_bus_change(&self) -> Result<(), Error> {
         Err(Error::NotImplemented)
     }
-}
-pub enum MediaType {
-    Audio,
-    Event,
-}
-
-pub enum BusDirection {
-    Input,
-    Output,
-}
-
-pub enum WindowType {
-    HIView,
-    HWND,
-    NSView,
-    UIView,
-    X11,
 }
 
 impl<'a> TryFrom<&'a CStr> for WindowType {
@@ -135,6 +155,7 @@ impl vst3::Steinberg::Vst::IComponentHandlerTrait for &dyn ComponentHandler {
     }
 
     unsafe fn restartComponent(&self, flags: vst3::Steinberg::int32) -> vst3::Steinberg::tresult {
+        let flags = RestartFlags::from_bits_retain(flags);
         self.restart_component(flags).to_code()
     }
 }
@@ -186,12 +207,20 @@ impl vst3::Steinberg::Vst::IComponentHandlerBusActivationTrait for &dyn Componen
     }
 }
 
-
+#[allow(non_snake_case)]
 impl IUnitHandlerTrait for &dyn ComponentHandler {
-    unsafe fn notifyProgramListChange(&self,listId:vst3::Steinberg::Vst::ProgramListID,programIndex:vst3::Steinberg::int32,) -> vst3::Steinberg::tresult {
-        self.notify_program_list_change(listId, programIndex).to_code()
+    unsafe fn notifyProgramListChange(
+        &self,
+        listId: vst3::Steinberg::Vst::ProgramListID,
+        programIndex: vst3::Steinberg::int32,
+    ) -> vst3::Steinberg::tresult {
+        self.notify_program_list_change(listId, programIndex)
+            .to_code()
     }
-    unsafe fn notifyUnitSelection(&self,unitId:vst3::Steinberg::Vst::UnitID,) -> vst3::Steinberg::tresult {
+    unsafe fn notifyUnitSelection(
+        &self,
+        unitId: vst3::Steinberg::Vst::UnitID,
+    ) -> vst3::Steinberg::tresult {
         self.notify_unit_selection(unitId).to_code()
     }
 }

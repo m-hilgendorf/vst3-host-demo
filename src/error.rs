@@ -36,7 +36,7 @@ impl From<Error> for tresult {
     }
 }
 
-pub (crate) trait ToCodeExt {
+pub(crate) trait ToCodeExt {
     fn to_code(&self) -> tresult;
 }
 
@@ -49,12 +49,12 @@ impl ToCodeExt for Result<(), Error> {
     }
 }
 
-pub (crate) trait ToResultExt {
+pub(crate) trait ToResultExt {
     fn as_result(&self) -> Result<(), Error>;
 }
 
-
 impl ToResultExt for tresult {
+    #[allow(non_upper_case_globals)]
     fn as_result(&self) -> Result<(), Error> {
         match *self {
             0 => Ok(()),
