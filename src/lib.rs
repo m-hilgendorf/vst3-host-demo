@@ -3,6 +3,8 @@ pub mod component;
 pub mod editor;
 pub mod error;
 pub mod factory;
+pub mod module;
 pub mod module_info;
 pub mod processor;
+pub mod scanner;
 pub mod util;

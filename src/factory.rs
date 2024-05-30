@@ -1,4 +1,10 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    ffi::CString,
+    os::{raw::c_void, unix::ffi::OsStrExt},
+    path::Path,
+    ptr::NonNull,
+    sync::Arc,
+};
 
 use bitflags::bitflags;
 use vst3::{
@@ -9,7 +15,10 @@ use vst3::{
     },
 };
 
-use crate::{component::ComponentHandler, editor::Editor, error::Error, module_info::ModuleInfo, processor::Processor};
+use crate::{
+    component::ComponentHandler, editor::Editor, error::Error, module::Module,
+    module_info::ModuleInfo, processor::Processor,
+};
 
 bitflags! {
     pub struct FactoryFlags: i32 {
@@ -22,23 +31,13 @@ bitflags! {
 }
 
 pub struct Factory {
-    pub module_info: ModuleInfo,
+    module: Module,
+    info: Option<ModuleInfo>,
     factory: ComPtr<IPluginFactory>,
     factory2: Option<ComPtr<IPluginFactory2>>,
 }
 
-pub struct FactoryInfo {
-    pub vendor: String,
-    pub url: String,
-    pub email: String,
-    pub flags: FactoryFlags,
-}
-
 impl Factory {
-    pub fn scan(path: impl AsRef<Path>) -> Result<Self, Error> {
-        todo!()
-    }
-
     pub fn create_instance(
         &self,
         id: &TUID,

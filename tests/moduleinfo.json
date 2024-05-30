@@ -1,0 +1,74 @@
+{
+  "Name": "again",
+  "Version": "3.7.6.0",
+  "Factory Info": {
+    "Vendor": "Steinberg Media Technologies",
+    "URL": "http://www.steinberg.net",
+    "E-Mail": "mailto:info@steinberg.de",
+    "Flags": {
+      "Unicode": true,
+      "Classes Discardable": false,
+      "Component Non Discardable": false,
+    },
+  },
+  "Classes": [
+    {
+      "CID": "84E8DE5F92554F5396FAE4133C935A18",
+      "Category": "Audio Module Class",
+      "Name": "AGain VST3",
+      "Vendor": "Steinberg Media Technologies",
+      "Version": "3.7.6.0",
+      "SDKVersion": "VST 3.7.6",
+      "Sub Categories": [
+        "Fx",
+      ],
+      "Class Flags": 1,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+        {
+          "Scale Factor": 1,
+          "Path": "Contents/Resources/Snapshots/84E8DE5F92554F5396FAE4133C935A18_snapshot.png",
+        },
+        {
+          "Scale Factor": 2,
+          "Path": "Contents/Resources/Snapshots/84E8DE5F92554F5396FAE4133C935A18_snapshot_2.0x.png",
+        },
+      ],
+    },
+    {
+      "CID": "D39D5B65D7AF42FA843F4AC841EB04F0",
+      "Category": "Component Controller Class",
+      "Name": "AGain VST3Controller",
+      "Vendor": "Steinberg Media Technologies",
+      "Version": "3.7.6.0",
+      "SDKVersion": "VST 3.7.6",
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+    {
+      "CID": "41347FD6FED64094AFBB12B7DBA1D441",
+      "Category": "Audio Module Class",
+      "Name": "AGain SideChain VST3",
+      "Vendor": "Steinberg Media Technologies",
+      "Version": "3.7.6.0",
+      "SDKVersion": "VST 3.7.6",
+      "Sub Categories": [
+        "Fx",
+      ],
+      "Class Flags": 1,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+        {
+          "Scale Factor": 2,
+          "Path": "Contents/Resources/Snapshots/41347FD6FED64094AFBB12B7DBA1D441_snapshot_2.0x.png",
+        },
+        {
+          "Scale Factor": 1,
+          "Path": "Contents/Resources/Snapshots/41347FD6FED64094AFBB12B7DBA1D441_snapshot.png",
+        },
+      ],
+    },
+  ],
+}

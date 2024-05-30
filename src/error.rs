@@ -4,7 +4,7 @@ use vst3::Steinberg::{
     kResultFalse, kResultOk, tresult,
 };
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(i32)]
 pub enum Error {
     False = kResultFalse,

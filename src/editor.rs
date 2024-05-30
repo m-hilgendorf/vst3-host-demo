@@ -3,7 +3,7 @@ use std::{mem::MaybeUninit, os::raw::c_void, ptr::addr_of_mut, sync::Mutex};
 
 use crate::{
     error::{Error, ToResultExt},
-    util::string128_to_string,
+    util::ToRustString,
 };
 use bitflags::bitflags;
 use vst3::{
@@ -99,9 +99,9 @@ impl Editor {
         };
         let info = ParameterInfo {
             id: info.id,
-            title: string128_to_string(&info.title),
-            short_title: string128_to_string(&info.shortTitle),
-            units: string128_to_string(&info.units),
+            title: (&info.title).to_rust_string(),
+            short_title: (&info.shortTitle).to_rust_string(),
+            units: (&info.units).to_rust_string(),
             unit_id: info.unitId,
             step_count: info.stepCount,
             default_normalized_value: info.defaultNormalizedValue,
@@ -118,7 +118,7 @@ impl Editor {
                 .getParamStringByValue(id, value, addr_of_mut!(buf))
                 .as_result()?;
         }
-        Ok(string128_to_string(&buf))
+        Ok((&buf).to_rust_string())
     }
 
     /// Denormalize a normalized parameter value.
