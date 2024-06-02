@@ -30,6 +30,7 @@ bitflags! {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 #[repr(i32)]
 pub enum MediaType {
     Audio = MediaTypes_::kAudio as _,
@@ -47,6 +48,7 @@ impl TryFrom<i32> for MediaType {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 #[repr(i32)]
 pub enum BusDirection {
     Input = BusDirections_::kInput as _,

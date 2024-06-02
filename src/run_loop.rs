@@ -4,10 +4,7 @@ use std::{
     mem::MaybeUninit,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     ptr::{addr_of, addr_of_mut, null_mut},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex, RwLock,
-    },
+    sync::{Arc, RwLock},
     thread::JoinHandle,
 };
 use vst3::{
@@ -16,16 +13,8 @@ use vst3::{
     Steinberg::Linux::{IEventHandler, IEventHandlerTrait, ITimerHandler, ITimerHandlerTrait},
 };
 
-pub struct RunLoop {
+pub(crate) struct RunLoop {
     inner: Arc<RwLock<Inner>>,
-}
-
-impl Clone for RunLoop {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
 }
 
 struct Inner {
@@ -33,11 +22,6 @@ struct Inner {
     handlers: Vec<(i32, Either<ComPtr<IEventHandler>, ComPtr<ITimerHandler>>)>,
     worker_thread: Option<JoinHandle<std::io::Result<()>>>,
     shutdown: bool,
-}
-
-enum Message {
-    Add(i32),
-    Remove(i32),
 }
 
 impl RunLoop {
@@ -77,6 +61,7 @@ impl RunLoop {
         handler: ComPtr<IEventHandler>,
         fd: i32,
     ) -> std::io::Result<()> {
+        eprintln!("event handler {fd}");
         self.register_fd(fd)?;
         self.inner
             .write()
@@ -102,6 +87,7 @@ impl RunLoop {
     }
 
     pub fn register_timer(&self, handler: ComPtr<ITimerHandler>, ms: u64) -> std::io::Result<()> {
+        eprintln!("timer handler {ms}");
         unsafe {
             let fd =
                 libc::timerfd_create(libc::CLOCK_REALTIME, libc::TFD_NONBLOCK | libc::TFD_CLOEXEC);
@@ -204,6 +190,10 @@ impl RunLoop {
 
     fn worker_thread(&self) -> std::io::Result<()> {
         unsafe {
+            let mut clock_granularity = MaybeUninit::zeroed();
+            libc::clock_getres(libc::CLOCK_MONOTONIC, clock_granularity.as_mut_ptr());
+            let clock_granularity = clock_granularity.assume_init();
+            let timeout = 1_000_000 / clock_granularity.tv_nsec;
             let mut events: [libc::epoll_event; 64] = MaybeUninit::zeroed().assume_init();
             loop {
                 let inner = self.inner.read().unwrap();
@@ -214,7 +204,7 @@ impl RunLoop {
                     inner.epollfd.as_raw_fd(),
                     events.as_mut_ptr(),
                     events.len().try_into().unwrap(),
-                    1,
+                    timeout as _,
                 );
                 if nfds < 0 {
                     return Err(std::io::Error::last_os_error());
@@ -227,6 +217,7 @@ impl RunLoop {
                     let u = U {
                         u64: events[idx].u64,
                     };
+                    eprintln!("handling event on {}", u.fd);
                     let Some(handler) = inner
                         .handlers
                         .iter()
@@ -249,17 +240,26 @@ impl RunLoop {
     }
 }
 
+impl Clone for RunLoop {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl Drop for RunLoop {
     fn drop(&mut self) {
         self.inner.write().unwrap().shutdown = true;
-        let mut inner = self.inner.write().unwrap();
-        if let Some(thread) = inner.worker_thread.take() {
+        let thread = self.inner.write().unwrap().worker_thread.take();
+        if let Some(thread) = thread {
             thread.join().ok();
-        }
-        for (fd, handler) in &inner.handlers {
-            if handler.is_right() {
-                unsafe {
-                    libc::close(*fd);
+            let inner = self.inner.write().unwrap();
+            for (fd, handler) in &inner.handlers {
+                if handler.is_right() {
+                    unsafe {
+                        libc::close(*fd);
+                    }
                 }
             }
         }

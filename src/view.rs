@@ -15,29 +15,42 @@ use vst3::Steinberg::Linux::{IEventHandler, IRunLoop, IRunLoopTrait, ITimerHandl
 use crate::error::{Error, ToCodeExt, ToResultExt};
 
 pub trait PlugFrame {
-    fn resize_view(&self, rect: ViewRect) -> Result<(), Error>;
-
-    #[cfg(target_os = "linux")]
-    fn register_event_handler(
-        &self,
-        event_handler: ComPtr<IEventHandler>,
-        fd: i32,
-    ) -> Result<(), Error>;
-
-    #[cfg(target_os = "linux")]
-    fn unregister_event_handler(&self, event_handler: ComPtr<IEventHandler>) -> Result<(), Error>;
-
-    #[cfg(target_os = "linux")]
-    fn register_timer(&self, timer: ComPtr<ITimerHandler>, ms: u64) -> Result<(), Error>;
-
-    #[cfg(target_os = "linux")]
-    fn unregister_timer(&self, timer: ComPtr<ITimerHandler>) -> Result<(), Error>;
+    fn resize_view(&self, _rect: ViewRect) -> Result<(), Error> {
+        Err(Error::NotImplemented)
+    }
 }
 
 pub(crate) struct PlugFrameWrapper {
     plug_frame: Box<dyn PlugFrame>,
     #[cfg(target_os = "linux")]
     run_loop: crate::run_loop::RunLoop,
+}
+
+impl Drop for PlugFrameWrapper {
+    fn drop(&mut self) {
+        eprintln!("dropping plug frame");
+    }
+}
+
+impl PlugFrameWrapper {
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn new(plug_frame: impl PlugFrame) -> Result<Self, Error> {
+        let plug_frame = Box::new(plug_frame);
+        Ok(Self { plug_frame })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn new(plug_frame: impl PlugFrame + 'static) -> Result<Self, Error> {
+        let plug_frame = Box::new(plug_frame);
+        let run_loop = crate::run_loop::RunLoop::new().map_err(|error| {
+            tracing::error!(%error, "failed to create run loop");
+            Error::Internal
+        })?;
+        Ok(Self {
+            plug_frame,
+            run_loop,
+        })
+    }
 }
 
 impl IPlugFrameTrait for PlugFrameWrapper {

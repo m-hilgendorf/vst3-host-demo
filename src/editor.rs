@@ -5,15 +5,16 @@ use crate::{
     component::{ComponentHandler, ComponentHandlerWrapper},
     error::{Error, ToResultExt},
     util::ToRustString,
-    view::View,
+    view::{PlugFrame, PlugFrameWrapper, View},
 };
 use bitflags::bitflags;
 use vst3::{
+    com_scrape_types::SmartPtr,
     Class, ComPtr, ComWrapper,
     Steinberg::{
-        kResultFalse, kResultOk, kResultTrue, tresult, IBStream, IBStreamTrait,
+        kResultFalse, kResultOk, kResultTrue, tresult, FUnknown, IBStream, IBStreamTrait,
         IBStream_::IStreamSeekMode_,
-        IPlugView,
+        IPlugViewTrait,
         Vst::{
             IConnectionPoint, IEditController, IEditController2, IEditController2Trait,
             IEditControllerTrait, KnobModes_, ParameterInfo_::ParameterFlags_,
@@ -148,11 +149,16 @@ impl Editor {
     }
 
     /// Create the view object for this plugin.
-    pub fn create_view(&self) -> Result<View, Error> {
+    pub fn create_view(&self, frame: impl PlugFrame + 'static) -> Result<View, Error> {
         let view_type = c"editor";
         unsafe {
             let iplugview = self.editor.createView(view_type.as_ptr());
             let view = ComPtr::from_raw(iplugview).ok_or(Error::False)?;
+            let frame = ComWrapper::new(PlugFrameWrapper::new(frame)?)
+                .to_com_ptr()
+                .unwrap();
+            view.setFrame(frame.ptr()).as_result()?;
+            std::mem::forget(frame);
             Ok(View::new(view))
         }
     }
