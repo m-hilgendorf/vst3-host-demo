@@ -2,8 +2,10 @@ use core::slice;
 use std::{mem::MaybeUninit, os::raw::c_void, ptr::addr_of_mut, sync::Mutex};
 
 use crate::{
+    component::{ComponentHandler, ComponentHandlerWrapper},
     error::{Error, ToResultExt},
     util::ToRustString,
+    view::View,
 };
 use bitflags::bitflags;
 use vst3::{
@@ -13,8 +15,8 @@ use vst3::{
         IBStream_::IStreamSeekMode_,
         IPlugView,
         Vst::{
-            IEditController, IEditController2, IEditController2Trait, IEditControllerTrait,
-            KnobModes_, ParameterInfo_::ParameterFlags_,
+            IConnectionPoint, IEditController, IEditController2, IEditController2Trait,
+            IEditControllerTrait, KnobModes_, ParameterInfo_::ParameterFlags_,
         },
     },
 };
@@ -23,6 +25,7 @@ use vst3::{
 pub struct Editor {
     editor: ComPtr<IEditController>,
     editor2: Option<ComPtr<IEditController2>>,
+    pub(crate) connection: Option<ComPtr<IConnectionPoint>>,
 }
 
 #[repr(i32)]
@@ -60,18 +63,31 @@ bitflags! {
 impl Editor {
     pub(crate) fn new(editor: ComPtr<IEditController>) -> Self {
         let editor2 = editor.cast();
-        Self { editor, editor2 }
+        let connection = editor.cast();
+        Self {
+            editor,
+            editor2,
+            connection,
+        }
     }
 
-    /// Set the state of the plugin, from a previous call to [Self::get_state]. Not real time safe.
-    pub fn set_state(&self, state: &[u8]) -> Result<(), Error> {
+    /// Set the state of the plugin's component.
+    pub fn set_component_state(&self, state: &[u8]) -> Result<(), Error> {
         let state = StateStream::from(state);
         let state = ComWrapper::new(state);
         let state = state.to_com_ptr().unwrap();
         unsafe { self.editor.setComponentState(state.as_ptr()).as_result() }
     }
 
-    /// Get the state of the plugin. Not real time safe.
+    /// Set the state of the plugin's controller, from a previous call to [Self::get_state]. Not real time safe.
+    pub fn set_state(&self, state: &[u8]) -> Result<(), Error> {
+        let state = StateStream::from(state);
+        let state = ComWrapper::new(state);
+        let state = state.to_com_ptr().unwrap();
+        unsafe { self.editor.setState(state.as_ptr()).as_result() }
+    }
+
+    /// Get the state of the plugin's controller. Not real time safe.
     pub fn get_state(&self) -> Result<Vec<u8>, Error> {
         let state = StateStream::default();
         let state = ComWrapper::new(state);
@@ -132,11 +148,12 @@ impl Editor {
     }
 
     /// Create the view object for this plugin.
-    pub fn create_view(&self) -> Result<ComPtr<IPlugView>, Error> {
+    pub fn create_view(&self) -> Result<View, Error> {
         let view_type = c"editor";
         unsafe {
             let iplugview = self.editor.createView(view_type.as_ptr());
-            ComPtr::from_raw(iplugview).ok_or(Error::False)
+            let view = ComPtr::from_raw(iplugview).ok_or(Error::False)?;
+            Ok(View::new(view))
         }
     }
 
@@ -176,10 +193,27 @@ impl Editor {
                 .as_result()
         }
     }
+
+    /// Set the component handler for the plugin's editor.
+    pub fn set_component_handler(
+        &self,
+        handler: impl ComponentHandler + 'static,
+    ) -> Result<(), Error> {
+        let wrapper = ComWrapper::new(ComponentHandlerWrapper {
+            handler: Box::new(handler),
+        })
+        .to_com_ptr()
+        .unwrap();
+        unsafe {
+            self.editor
+                .setComponentHandler(wrapper.as_ptr())
+                .as_result()
+        }
+    }
 }
 
 #[derive(Default)]
-struct StateStream {
+pub(crate) struct StateStream {
     inner: Mutex<StateStreamInner>,
 }
 
@@ -187,6 +221,12 @@ struct StateStream {
 struct StateStreamInner {
     offset: usize,
     data: Vec<u8>,
+}
+
+impl StateStream {
+    pub fn data(&self) -> Vec<u8> {
+        self.inner.lock().unwrap().data.clone()
+    }
 }
 
 impl From<&[u8]> for StateStream {
@@ -228,7 +268,9 @@ impl IBStreamTrait for StateStream {
         let slice = slice::from_raw_parts(buffer.cast::<u8>(), numBytes.try_into().unwrap());
         inner.data.extend_from_slice(slice);
         inner.offset += slice.len();
-        *numBytesWritten = slice.len().try_into().unwrap();
+        if !numBytesWritten.is_null() {
+            *numBytesWritten = slice.len().try_into().unwrap();
+        }
         kResultOk
     }
 

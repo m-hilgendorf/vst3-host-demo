@@ -1,19 +1,27 @@
 use crate::{
-    component::BusDirection,
+    application::{HostApplication, HostApplicationWrapper},
+    component::{BusDirection, MediaType},
+    editor::{Editor, StateStream},
     error::{Error, ToResultExt},
+    util::ToRustString,
 };
+use bitflags::bitflags;
 use std::{
+    mem::MaybeUninit,
     os::raw::c_void,
     ptr::{addr_of_mut, null_mut},
 };
 use vst3::{
-    ComPtr,
+    ComPtr, ComWrapper,
     Steinberg::{
         kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult, FUnknown, FUnknownVtbl,
+        IPluginBaseTrait,
         Vst::{
-            AudioBusBuffers, Event, IAudioProcessor, IAudioProcessorTrait, IEventList,
-            IEventListVtbl, IParamValueQueue, IParamValueQueueVtbl, IParameterChanges,
-            IParameterChangesVtbl, ProcessContext, ProcessModes_, SpeakerArrangement,
+            AudioBusBuffers, BusInfo_::BusFlags_, BusTypes_, Event, IAudioProcessor,
+            IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
+            IConnectionPointTrait, IEventList, IEventListVtbl, IParamValueQueue,
+            IParamValueQueueVtbl, IParameterChanges, IParameterChangesVtbl, IoModes_,
+            ProcessContext, ProcessModes_, ProcessSetup, SpeakerArrangement,
             SymbolicSampleSizes_::kSample32,
         },
         TUID,
@@ -22,14 +30,62 @@ use vst3::{
 
 /// Wrapper around the audio processor implementation of a plugin.
 pub struct Processor {
+    component: ComPtr<IComponent>,
     processor: ComPtr<IAudioProcessor>,
+    pub(crate) connection: Option<ComPtr<IConnectionPoint>>,
+}
+
+#[repr(i32)]
+pub enum IoMode {
+    Simple = IoModes_::kSimple as _,
+    Advanced = IoModes_::kAdvanced as _,
+    Offline = IoModes_::kOfflineProcessing as _,
 }
 
 #[repr(i32)]
 pub enum ProcessMode {
-    Offline = ProcessModes_::kOffline as i32,
-    Prefetch = ProcessModes_::kPrefetch as i32,
-    Realtime = ProcessModes_::kRealtime as i32,
+    Offline = ProcessModes_::kOffline as _,
+    Prefetch = ProcessModes_::kPrefetch as _,
+    Realtime = ProcessModes_::kRealtime as _,
+}
+
+pub struct BusInfo {
+    pub media_type: MediaType,
+    pub dir: BusDirection,
+    pub channel_count: usize,
+    pub name: String,
+    pub bus_type: BusType,
+    pub flags: BusFlags,
+}
+
+pub struct RoutingInfo {
+    pub media_type: MediaType,
+    pub bus_index: usize,
+    pub channel: i32,
+}
+
+#[repr(i32)]
+pub enum BusType {
+    Aux = BusTypes_::kAux as _,
+    Main = BusTypes_::kMain as _,
+}
+
+impl TryFrom<i32> for BusType {
+    type Error = Error;
+    fn try_from(value: i32) -> Result<Self, Error> {
+        match value as _ {
+            BusTypes_::kAux => Ok(Self::Aux),
+            BusTypes_::kMain => Ok(Self::Main),
+            _ => Err(Error::InvalidArg),
+        }
+    }
+}
+
+bitflags! {
+    pub struct BusFlags: u32 {
+        const DefaultActive = BusFlags_::kDefaultActive as _;
+        const ControlVoltage = BusFlags_::kIsControlVoltage as _;
+    }
 }
 
 #[repr(C)]
@@ -89,10 +145,127 @@ pub struct ProcessData<'a> {
 }
 
 impl Processor {
-    pub(crate) fn new(processor: ComPtr<IAudioProcessor>) -> Self {
-        Self { processor }
+    pub(crate) fn new(component: ComPtr<IComponent>) -> Result<Self, Error> {
+        let processor = component.cast().ok_or(Error::NoInterface)?;
+        let connection = component.cast();
+        Ok(Self {
+            component,
+            processor,
+            connection,
+        })
+    }
+}
+
+impl Processor {
+    pub fn initialize(&self, host: impl HostApplication + 'static) -> Result<(), Error> {
+        let host = ComWrapper::new(HostApplicationWrapper {
+            host: Box::new(host),
+        })
+        .to_com_ptr()
+        .unwrap();
+        unsafe { self.component.initialize(host.as_ptr()).as_result() }
     }
 
+    pub fn terminate(&self) -> Result<(), Error> {
+        unsafe { self.component.terminate().as_result() }
+    }
+
+    pub fn set_io_mode(&self, io_mode: IoMode) -> Result<(), Error> {
+        unsafe { self.component.setIoMode(io_mode as i32).as_result() }
+    }
+
+    pub fn get_bus_count(&self, media_type: MediaType, dir: BusDirection) -> usize {
+        unsafe {
+            self.component
+                .getBusCount(media_type as _, dir as _)
+                .try_into()
+                .unwrap()
+        }
+    }
+
+    pub fn get_bus_info(
+        &self,
+        media_type: MediaType,
+        dir: BusDirection,
+        index: usize,
+    ) -> Result<BusInfo, Error> {
+        unsafe {
+            let mut info = MaybeUninit::zeroed();
+            self.component
+                .getBusInfo(
+                    media_type as _,
+                    dir as _,
+                    index.try_into().unwrap(),
+                    info.as_mut_ptr(),
+                )
+                .as_result()?;
+            let info = info.assume_init();
+            let media_type = info.mediaType.try_into()?;
+            let dir = info.direction.try_into()?;
+            let channel_count = info.channelCount.try_into().unwrap();
+            let bus_type = info.busType.try_into()?;
+            let name = (&info.name).to_rust_string();
+            let flags = BusFlags::from_bits_retain(info.flags);
+            Ok(BusInfo {
+                media_type,
+                dir,
+                channel_count,
+                name,
+                bus_type,
+                flags,
+            })
+        }
+    }
+
+    pub fn set_active(&self, active: bool) -> Result<(), Error> {
+        let active = if active {
+            kResultTrue as _
+        } else {
+            kResultFalse as _
+        };
+        unsafe { self.component.setActive(active).as_result() }
+    }
+
+    /// Set the state of the plugin, from a previous call to [Self::get_state]. Not real time safe.
+    pub fn set_state(&self, state: &[u8]) -> Result<(), Error> {
+        let state = StateStream::from(state);
+        let state = ComWrapper::new(state);
+        let state = state.to_com_ptr().unwrap();
+        unsafe { self.component.setState(state.as_ptr()).as_result() }
+    }
+
+    /// Get the state of the plugin. Not real time safe.
+    pub fn get_state(&self) -> Result<Vec<u8>, Error> {
+        let state = StateStream::default();
+        let state = ComWrapper::new(state);
+        unsafe {
+            let state = state.to_com_ptr().unwrap();
+            self.component.getState(state.as_ptr()).as_result()?;
+        };
+        Ok(state.data())
+    }
+
+    /// Connect this plugin to its editor.
+    pub fn connect(&self, editor: &Editor) {
+        if let (Some(processor), Some(editor)) =
+            (self.connection.as_ref(), editor.connection.as_ref())
+        {
+            unsafe {
+                processor.connect(editor.as_ptr());
+                editor.connect(processor.as_ptr());
+            }
+        }
+    }
+
+    /// Synchronize this plugins' state with its editor.
+    pub fn synchronize(&self, editor: &Editor) {
+        if let Ok(state) = self.get_state() {
+            editor.set_component_state(&state).ok();
+        }
+    }
+}
+
+impl Processor {
     pub fn set_bus_arrangements(
         &self,
         inputs: &mut [SpeakerArrangement],
@@ -114,12 +287,15 @@ impl Processor {
     pub fn get_bus_arrangement(
         &self,
         dir: BusDirection,
-        index: i32,
+        index: usize,
     ) -> Result<SpeakerArrangement, Error> {
         let mut ret = 0;
         let ec = unsafe {
-            self.processor
-                .getBusArrangement(dir as i32, index, addr_of_mut!(ret))
+            self.processor.getBusArrangement(
+                dir as i32,
+                index.try_into().unwrap(),
+                addr_of_mut!(ret),
+            )
         };
         ec.as_result().map(|()| ret)
     }
@@ -130,6 +306,25 @@ impl Processor {
 
     pub fn get_tail_samples(&self) -> u32 {
         unsafe { self.processor.getTailSamples() }
+    }
+
+    pub fn setup_processing(
+        &self,
+        process_mode: ProcessMode,
+        max_buffer_size: usize,
+        sample_rate: f64,
+    ) -> Result<(), Error> {
+        unsafe {
+            let mut setup = ProcessSetup {
+                processMode: process_mode as _,
+                symbolicSampleSize: kSample32 as _,
+                maxSamplesPerBlock: max_buffer_size.try_into().unwrap(),
+                sampleRate: sample_rate,
+            };
+            self.processor
+                .setupProcessing(addr_of_mut!(setup))
+                .as_result()
+        }
     }
 
     pub fn set_processing(&self, is_processing: bool) -> Result<(), Error> {

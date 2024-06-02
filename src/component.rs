@@ -1,10 +1,17 @@
 use crate::error::{Error, ToCodeExt as _};
 use bitflags::bitflags;
 use std::ffi::CStr;
-use vst3::Steinberg::{
-    kInvalidArgument, kPlatformTypeHIView, kPlatformTypeHWND, kPlatformTypeNSView,
-    kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID, kResultTrue,
-    Vst::{BusDirections_, IUnitHandler2Trait, IUnitHandlerTrait, MediaTypes_, RestartFlags_},
+use vst3::{
+    Class,
+    Steinberg::{
+        kInvalidArgument, kPlatformTypeHIView, kPlatformTypeHWND, kPlatformTypeNSView,
+        kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID, kResultTrue,
+        Vst::{
+            BusDirections_, IComponentHandler, IComponentHandler2, IComponentHandlerBusActivation,
+            IUnitHandler, IUnitHandler2, IUnitHandler2Trait, IUnitHandlerTrait, MediaTypes_,
+            RestartFlags_,
+        },
+    },
 };
 
 bitflags! {
@@ -23,14 +30,38 @@ bitflags! {
     }
 }
 
+#[repr(i32)]
 pub enum MediaType {
-    Audio,
-    Event,
+    Audio = MediaTypes_::kAudio as _,
+    Event = MediaTypes_::kEvent as _,
 }
 
+impl TryFrom<i32> for MediaType {
+    type Error = Error;
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value as _ {
+            MediaTypes_::kAudio => Ok(Self::Audio),
+            MediaTypes_::kEvent => Ok(Self::Event),
+            _ => Err(Error::InvalidArg),
+        }
+    }
+}
+
+#[repr(i32)]
 pub enum BusDirection {
-    Input,
-    Output,
+    Input = BusDirections_::kInput as _,
+    Output = BusDirections_::kOutput as _,
+}
+
+impl TryFrom<i32> for BusDirection {
+    type Error = Error;
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value as u32 {
+            BusDirections_::kInput => Ok(Self::Input),
+            BusDirections_::kOutput => Ok(Self::Output),
+            _ => Err(Error::InvalidArg),
+        }
+    }
 }
 
 pub enum WindowType {
@@ -39,6 +70,16 @@ pub enum WindowType {
     NSView,
     UIView,
     X11,
+}
+
+impl From<i32> for WindowType {
+    fn from(value: i32) -> Self {
+        value.try_into().unwrap()
+    }
+}
+
+pub(crate) struct ComponentHandlerWrapper {
+    pub handler: Box<dyn ComponentHandler>,
 }
 
 /// A `ComponentHandler` implementation must be passed to all plugin instances, and is used by the
@@ -141,32 +182,32 @@ impl<'a> TryFrom<&'a CStr> for WindowType {
     }
 }
 
-impl vst3::Steinberg::Vst::IComponentHandlerTrait for &dyn ComponentHandler {
+impl vst3::Steinberg::Vst::IComponentHandlerTrait for ComponentHandlerWrapper {
     unsafe fn beginEdit(&self, id: u32) -> vst3::Steinberg::tresult {
-        self.begin_edit(id).to_code()
+        self.handler.begin_edit(id).to_code()
     }
 
     unsafe fn endEdit(&self, id: u32) -> vst3::Steinberg::tresult {
-        self.end_edit(id).to_code()
+        self.handler.end_edit(id).to_code()
     }
 
     unsafe fn performEdit(&self, id: u32, value: f64) -> vst3::Steinberg::tresult {
-        self.perform_edit(id, value).to_code()
+        self.handler.perform_edit(id, value).to_code()
     }
 
     unsafe fn restartComponent(&self, flags: vst3::Steinberg::int32) -> vst3::Steinberg::tresult {
         let flags = RestartFlags::from_bits_retain(flags);
-        self.restart_component(flags).to_code()
+        self.handler.restart_component(flags).to_code()
     }
 }
 
-impl vst3::Steinberg::Vst::IComponentHandler2Trait for &dyn ComponentHandler {
+impl vst3::Steinberg::Vst::IComponentHandler2Trait for ComponentHandlerWrapper {
     unsafe fn startGroupEdit(&self) -> vst3::Steinberg::tresult {
-        self.start_group_edit().to_code()
+        self.handler.start_group_edit().to_code()
     }
 
     unsafe fn finishGroupEdit(&self) -> vst3::Steinberg::tresult {
-        self.end_group_edit().to_code()
+        self.handler.end_group_edit().to_code()
     }
 
     unsafe fn requestOpenEditor(
@@ -175,15 +216,15 @@ impl vst3::Steinberg::Vst::IComponentHandler2Trait for &dyn ComponentHandler {
     ) -> vst3::Steinberg::tresult {
         let str = CStr::from_ptr(name.cast());
         let str = str.to_string_lossy();
-        self.request_open_editor(str.as_ref()).to_code()
+        self.handler.request_open_editor(str.as_ref()).to_code()
     }
 
     unsafe fn setDirty(&self, state: vst3::Steinberg::TBool) -> vst3::Steinberg::tresult {
-        self.set_dirty(state == kResultTrue as u8).to_code()
+        self.handler.set_dirty(state == kResultTrue as u8).to_code()
     }
 }
 
-impl vst3::Steinberg::Vst::IComponentHandlerBusActivationTrait for &dyn ComponentHandler {
+impl vst3::Steinberg::Vst::IComponentHandlerBusActivationTrait for ComponentHandlerWrapper {
     unsafe fn requestBusActivation(
         &self,
         r#type: vst3::Steinberg::Vst::MediaType,
@@ -202,31 +243,43 @@ impl vst3::Steinberg::Vst::IComponentHandlerBusActivationTrait for &dyn Componen
             _ => return kInvalidArgument,
         };
         let state = state == (kResultTrue as u8);
-        self.request_bus_activation(typ, dir, index, state)
+        self.handler
+            .request_bus_activation(typ, dir, index, state)
             .to_code()
     }
 }
 
 #[allow(non_snake_case)]
-impl IUnitHandlerTrait for &dyn ComponentHandler {
+impl IUnitHandlerTrait for ComponentHandlerWrapper {
     unsafe fn notifyProgramListChange(
         &self,
         listId: vst3::Steinberg::Vst::ProgramListID,
         programIndex: vst3::Steinberg::int32,
     ) -> vst3::Steinberg::tresult {
-        self.notify_program_list_change(listId, programIndex)
+        self.handler
+            .notify_program_list_change(listId, programIndex)
             .to_code()
     }
     unsafe fn notifyUnitSelection(
         &self,
         unitId: vst3::Steinberg::Vst::UnitID,
     ) -> vst3::Steinberg::tresult {
-        self.notify_unit_selection(unitId).to_code()
+        self.handler.notify_unit_selection(unitId).to_code()
     }
 }
 
-impl IUnitHandler2Trait for &dyn ComponentHandler {
+impl IUnitHandler2Trait for ComponentHandlerWrapper {
     unsafe fn notifyUnitByBusChange(&self) -> vst3::Steinberg::tresult {
-        self.notify_unit_by_bus_change().to_code()
+        self.handler.notify_unit_by_bus_change().to_code()
     }
+}
+
+impl Class for ComponentHandlerWrapper {
+    type Interfaces = (
+        IComponentHandler,
+        IComponentHandler2,
+        IComponentHandlerBusActivation,
+        IUnitHandler,
+        IUnitHandler2,
+    );
 }

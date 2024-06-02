@@ -61,7 +61,7 @@ pub struct Class {
     pub class_flags: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, DeserializeFromStr)]
+#[derive(Debug, Copy, Clone, Serialize, DeserializeFromStr)]
 pub struct CID(pub TUID);
 
 impl FromStr for CID {

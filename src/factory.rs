@@ -30,23 +30,6 @@ bitflags! {
     }
 }
 
-pub struct Factory {
-    module: Module,
-    info: Option<ModuleInfo>,
-    factory: ComPtr<IPluginFactory>,
-    factory2: Option<ComPtr<IPluginFactory2>>,
-}
-
-impl Factory {
-    pub fn create_instance(
-        &self,
-        id: &TUID,
-        handler: impl ComponentHandler,
-    ) -> Result<Plugin, Error> {
-        todo!()
-    }
-}
-
 pub struct Plugin {
     component: ComPtr<IComponent>,
 }

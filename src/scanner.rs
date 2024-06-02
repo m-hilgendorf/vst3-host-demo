@@ -3,12 +3,31 @@
 use std::{
     fs::File,
     io::Read,
+    mem::MaybeUninit,
+    ops::Deref,
+    os::unix::process,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock, RwLockReadGuard},
 };
 
-use crate::{error::Error, module::Module, module_info::ModuleInfo};
+use crate::{
+    editor::{Editor, StateStream},
+    error::{Error, ToResultExt},
+    module::Module,
+    module_info::{ModuleInfo, CID},
+    processor::Processor,
+};
 use serde::{Deserialize, Serialize};
+use vst3::{
+    ComPtr,
+    Steinberg::{
+        kResultOk, IPluginFactoryTrait,
+        Vst::{
+            IAudioProcessor_iid, IComponent, IComponentTrait, IComponent_iid,
+            IConnectionPointTrait, IEditController, IEditController_iid,
+        },
+    },
+};
 
 /// Holds a list of scanned plugins that may or may not be loaded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,11 +45,11 @@ pub struct Scanned {
     pub path: PathBuf,
 
     #[serde(default, skip)]
-    module: Option<Arc<Module>>,
+    module: Arc<RwLock<Option<Module>>>,
 }
 
 /// The list of standard search paths.
-pub fn standard_search_paths() -> Vec<PathBuf> {
+pub fn default_search_paths() -> Vec<PathBuf> {
     let mut paths = vec![];
     if cfg!(target_os = "macos") {
         if let Some(username) = std::env::var_os("USERNAME") {
@@ -91,6 +110,10 @@ impl Scanner {
 
         Self { plugins }
     }
+
+    pub fn plugins(&self) -> impl Iterator<Item = Info<'_>> {
+        self.plugins.iter().flat_map(|plugin| plugin.plugins())
+    }
 }
 
 impl Scanned {
@@ -104,17 +127,6 @@ impl Scanned {
 
         // Try to scan the plugin as a directory.
         if metadata.file_type().is_dir() {
-            // Get the binary path.
-            let binary_path = path
-                .join("Contents")
-                .join(contents_path()?)
-                .join(binary_path(&path));
-            if !binary_path.exists() {
-                let path = binary_path.display();
-                tracing::warn!(%path, "missing bundle contents in .vst3 directory");
-                return Ok(None);
-            }
-
             // Read the moduleinfo.json if it exists.
             let moduleinfo_json_path = path.join("Contents/moduleinfo.json");
             if moduleinfo_json_path.exists() {
@@ -132,77 +144,78 @@ impl Scanned {
                 };
                 return Ok(Some(Scanned {
                     info,
-                    path: binary_path,
-                    module: None,
+                    path: path.to_owned(),
+                    module: Arc::new(RwLock::new(None)),
                 }));
             }
 
             // Otherwise scan the plugin.
-            return scan_binary(&binary_path);
+            return scan_binary(path);
         }
         Ok(None)
     }
 
-    pub fn load(&mut self) -> Result<&Module, Error> {
-        if self.module.is_none() {
+    pub fn load(&self) -> Result<impl Deref<Target = Module> + '_, Error> {
+        if self.module.read().unwrap().is_none() {
             let module = Module::try_open(&self.path)
                 .inspect(|_| {
                     let path = self.path.display();
-                    tracing::info!(%path, "successfully loaded plugin");
+                    tracing::info!(%path, "loaded plugin");
                 })
                 .inspect_err(|error| {
                     let path = self.path.display();
                     tracing::error!(%path, %error, "failed to load plugin");
                 })?
                 .ok_or(Error::Internal)?;
-            self.module.replace(Arc::new(module));
+            self.module.write().unwrap().replace(module);
         }
-        Ok(self.module.as_deref().unwrap())
+        let module = self.module.read().unwrap();
+        Ok(ModuleRef { module })
+    }
+
+    pub fn name(&self) -> String {
+        if let Some(name) = &self.info.name {
+            return name.clone();
+        }
+        self.path.file_stem().unwrap().to_string_lossy().to_string()
+    }
+
+    pub fn plugins(&self) -> impl Iterator<Item = Info<'_>> {
+        self.info
+            .classes
+            .iter()
+            .filter(|class| class.category.as_str() == AUDIO_MODULE_CLASS)
+            .map(move |info| {
+                let name = &info.name;
+                let vendor = info
+                    .vendor
+                    .as_ref()
+                    .unwrap_or(&self.info.factory_info.vendor);
+                let version = info.version.as_ref().map(String::as_str);
+                let category = &info.category;
+                let subcategories = &info.subcategories;
+                let scanned = self;
+                Info {
+                    vendor,
+                    name,
+                    version,
+                    category,
+                    subcategories,
+                    cid: info.cid,
+                    scanned,
+                }
+            })
     }
 }
 
-#[allow(clippy::needless_return)]
-fn contents_path() -> std::io::Result<String> {
-    #[cfg(target_os = "macos")]
-    {
-        return Ok("MacOS".into());
-    }
-    #[cfg(target_os = "linux")]
-    unsafe {
-        let mut buf = std::mem::MaybeUninit::uninit();
-        let ec = libc::uname(buf.as_mut_ptr());
-        if ec != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let buf = buf.assume_init();
-        let machine = std::ffi::CStr::from_ptr(buf.machine.as_ptr()).to_string_lossy();
-        return Ok(format!("{machine}-linux"));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if cfg!(target_arch = "x86_64") {
-            return Ok(format!("x86_64-win"));
-        } else if cfg(target_arch = "aarch64") {
-            return Ok(format!("arm64-win"));
-        } else {
-            return Err(std::io::Error::other("unknown architecture"));
-        }
-    }
+struct ModuleRef<'a> {
+    module: RwLockReadGuard<'a, Option<Module>>,
 }
 
-#[allow(clippy::needless_return)]
-fn binary_path(path: &Path) -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        return path.file_stem().unwrap().into();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        return (path.file_stem().unwrap().as_ref() as &Path).with_extension("so");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return (path.file_stem().unwrap().as_ref() as &Path).with_extension("vst3");
+impl<'a> Deref for ModuleRef<'a> {
+    type Target = Module;
+    fn deref(&self) -> &Self::Target {
+        self.module.as_ref().unwrap()
     }
 }
 
@@ -222,27 +235,87 @@ fn scan_binary(path: &Path) -> std::io::Result<Option<Scanned>> {
     return Ok(Some(Scanned {
         info,
         path: path.to_owned(),
-        module: Some(Arc::new(module)),
+        module: Arc::new(RwLock::new(Some(module))),
     }));
+}
+
+pub struct Info<'a> {
+    pub vendor: &'a str,
+    pub name: &'a str,
+    pub version: Option<&'a str>,
+    pub category: &'a str,
+    pub subcategories: &'a [String],
+    cid: CID,
+    scanned: &'a Scanned,
+}
+
+impl<'a> Info<'a> {
+    pub fn create_instance(&self) -> Result<(Processor, Editor), Error> {
+        let module = self.scanned.load()?;
+        let factory = module.factory();
+        unsafe {
+            let mut obj = MaybeUninit::zeroed();
+            factory
+                .createInstance(
+                    self.cid.0.as_ptr(),
+                    IComponent_iid.as_ptr(),
+                    obj.as_mut_ptr(),
+                )
+                .as_result()?;
+            let obj = obj.assume_init();
+
+            // Load the component.
+            let component = ComPtr::from_raw(obj.cast()).ok_or(Error::NoInterface)?;
+
+            // Create the processor.
+            let processor = Processor::new(component.clone())?;
+
+            // Create the editor.
+            let editor = match component.cast::<IEditController>() {
+                Some(editor) => editor,
+                None => {
+                    // If this is not a single component effect, look it up.
+                    let mut cid = MaybeUninit::zeroed();
+                    component
+                        .getControllerClassId(cid.as_mut_ptr())
+                        .as_result()?;
+                    let cid = cid.assume_init();
+
+                    // Create an instance of the editor.
+                    let mut obj = MaybeUninit::zeroed();
+                    factory
+                        .createInstance(
+                            cid.as_ptr(),
+                            IEditController_iid.as_ptr(),
+                            obj.as_mut_ptr(),
+                        )
+                        .as_result()?;
+                    let obj = obj.assume_init();
+                    ComPtr::from_raw(obj.cast()).ok_or(Error::NoInterface)?
+                }
+            };
+            let editor = Editor::new(editor);
+            Ok((processor, editor))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{standard_search_paths, Scanner};
+    use super::{default_search_paths, Scanner};
 
     #[test]
     fn scan_default_paths() {
-        // let plugins = Scanner::scan_recursively(&standard_search_paths());
-        // let sdk_dir = std::env::var("VST3_SDK_DIR").unwrap();
-        let sdk_dir = "/home/mikedorf/dev/vst3sdk/build";
-        let mut plugins = Scanner::scan_recursively(&[sdk_dir.into()]);
-        plugins
+        let search_paths = default_search_paths();
+        let mut scanner = Scanner::scan_recursively(&search_paths);
+        scanner
             .plugins
             .sort_unstable_by_key(|plug| plug.info.name.clone());
-
-        for mut plug in plugins.plugins {
-            eprintln!("loading {:#?}", plug.path);
+        for plug in &scanner.plugins {
             let _module = plug.load().unwrap();
         }
+        eprintln!("loaded {} plugins.", scanner.plugins.len());
     }
 }
+
+const AUDIO_MODULE_CLASS: &str = "Audio Module Class";

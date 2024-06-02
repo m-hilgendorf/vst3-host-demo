@@ -1,15 +1,13 @@
-use core::fmt;
-use std::{mem::MaybeUninit, os::raw::c_void, ptr::NonNull};
-
-use vst3::{
-    ComPtr,
-    Steinberg::{IPluginFactory, IPluginFactory2, IPluginFactory2Trait, IPluginFactoryTrait},
-};
-
 use crate::{
     error::{Error, ToResultExt},
     module_info::{Class, FactoryInfo, ModuleInfo, CID},
     util::ToRustString,
+};
+use core::fmt;
+use std::{mem::MaybeUninit, os::raw::c_void};
+use vst3::{
+    ComPtr,
+    Steinberg::{IPluginFactory, IPluginFactory2, IPluginFactory2Trait, IPluginFactoryTrait},
 };
 
 #[cfg(target_os = "linux")]
@@ -35,7 +33,7 @@ type GetPluginFactoryFn = unsafe extern "system" fn() -> *mut IPluginFactory;
 pub struct Module {
     handle: *mut c_void,
     exit: ExitFn,
-    pub(crate) factory: ComPtr<IPluginFactory>,
+    pub(crate) factory: Option<ComPtr<IPluginFactory>>,
 }
 
 impl fmt::Debug for Module {
@@ -45,11 +43,16 @@ impl fmt::Debug for Module {
 }
 
 impl Module {
+    pub fn factory(&self) -> ComPtr<IPluginFactory> {
+        self.factory.as_ref().unwrap().clone()
+    }
+
     pub fn info(&self) -> Result<ModuleInfo, Error> {
+        let factory = self.factory();
         unsafe {
             // Load the factory info.
             let mut factory_info = MaybeUninit::uninit();
-            self.factory
+            factory
                 .getFactoryInfo(factory_info.as_mut_ptr())
                 .as_result()?;
             let factory_info = factory_info.assume_init();
@@ -62,11 +65,11 @@ impl Module {
             };
 
             // Initialize the classes vector.
-            let num_classes = self.factory.countClasses();
+            let num_classes = factory.countClasses();
             let mut classes = Vec::with_capacity(num_classes.try_into().unwrap());
 
             // Try and upcast to IPluginFactory2.
-            if let Some(factory) = self.factory.cast::<IPluginFactory2>() {
+            if let Some(factory) = factory.cast::<IPluginFactory2>() {
                 for index in 0..num_classes {
                     let mut info = MaybeUninit::uninit();
                     factory
@@ -93,9 +96,7 @@ impl Module {
             } else {
                 for index in 0..num_classes {
                     let mut info = MaybeUninit::uninit();
-                    self.factory
-                        .getClassInfo(index, info.as_mut_ptr())
-                        .as_result()?;
+                    factory.getClassInfo(index, info.as_mut_ptr()).as_result()?;
                     let info = info.assume_init();
                     let info = Class {
                         cid: CID(info.cid),
@@ -124,6 +125,7 @@ impl Module {
 
 impl Drop for Module {
     fn drop(&mut self) {
+        self.factory.take();
         self.close();
     }
 }

@@ -1,14 +1,12 @@
-use vst3::ComPtr;
-
-use crate::error::Error;
-
 use super::{EnterFn, ExitFn, GetPluginFactoryFn, Module};
+use crate::error::Error;
 use std::{
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, OsStr},
     mem,
     os::{raw::c_void, unix::ffi::OsStrExt},
     path::{Path, PathBuf},
 };
+use vst3::ComPtr;
 
 impl Module {
     pub fn try_open(path: impl AsRef<Path>) -> Result<Option<Self>, Error> {
@@ -24,11 +22,9 @@ impl Module {
             }
             handle
         };
-
         let enter = dlsym::<EnterFn>(handle, c"ModuleEntry")?;
         let exit = dlsym::<ExitFn>(handle, c"ModuleExit")?;
         let get_plugin_factory = dlsym::<GetPluginFactoryFn>(handle, c"GetPluginFactory")?;
-
         let factory = unsafe {
             if !enter(handle) {
                 tracing::error!("ModuleEntry failed");
@@ -37,14 +33,14 @@ impl Module {
             }
             ComPtr::from_raw(get_plugin_factory()).ok_or_else(|| {
                 tracing::error!("GetPluginFactory failed");
+                libc::dlclose(handle);
                 Error::Internal
             })?
         };
-
         Ok(Some(Self {
             handle,
             exit,
-            factory,
+            factory: Some(factory),
         }))
     }
 
@@ -76,7 +72,16 @@ fn library_path(bundle: &Path) -> Result<PathBuf, Error> {
         return Ok(bundle.to_owned());
     }
     let machine = machine()?;
-    let path = bundle.join("Contents").join(format!("{machine}-linx"));
+    let mut so_name = bundle
+        .file_stem()
+        .ok_or(Error::Internal)?
+        .as_bytes()
+        .to_vec();
+    so_name.extend_from_slice(b".so");
+    let path = bundle
+        .join("Contents")
+        .join(format!("{machine}-linux"))
+        .join(OsStr::from_bytes(&so_name));
     Ok(path)
 }
 
