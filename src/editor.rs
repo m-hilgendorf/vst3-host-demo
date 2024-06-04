@@ -1,5 +1,10 @@
 use core::slice;
-use std::{mem::MaybeUninit, os::raw::c_void, ptr::addr_of_mut, sync::Mutex};
+use std::{
+    mem::{self, MaybeUninit},
+    os::raw::c_void,
+    ptr::addr_of_mut,
+    sync::Mutex,
+};
 
 use crate::{
     component::{ComponentHandler, ComponentHandlerWrapper},
@@ -76,8 +81,12 @@ impl Editor {
     pub fn set_component_state(&self, state: &[u8]) -> Result<(), Error> {
         let state = StateStream::from(state);
         let state = ComWrapper::new(state);
-        let state = state.to_com_ptr().unwrap();
-        unsafe { self.editor.setComponentState(state.as_ptr()).as_result() }
+        unsafe {
+            self.editor
+                .setComponentState(state.as_com_ref().unwrap().as_ptr())
+                .as_result()?;
+        }
+        Ok(())
     }
 
     /// Set the state of the plugin's controller, from a previous call to [Self::get_state]. Not real time safe.
@@ -149,15 +158,21 @@ impl Editor {
     }
 
     /// Create the view object for this plugin.
-    pub fn create_view(&self, frame: impl PlugFrame + 'static) -> Result<View, Error> {
+    #[cfg(target_os = "linux")]
+    pub fn create_view(
+        &self,
+        frame: impl PlugFrame + 'static,
+        callback: impl Fn(crate::run_loop::MainThreadEvent) + Send + Sync + 'static,
+    ) -> Result<View, Error> {
         let view_type = c"editor";
         unsafe {
             let iplugview = self.editor.createView(view_type.as_ptr());
-            let view = ComPtr::from_raw(iplugview).ok_or(Error::False)?;
-            let frame = ComWrapper::new(PlugFrameWrapper::new(frame)?)
+            let view: ComPtr<vst3::Steinberg::IPlugView> =
+                ComPtr::from_raw(iplugview).ok_or(Error::False)?;
+            let frame = ComWrapper::new(PlugFrameWrapper::new(frame, callback)?)
                 .to_com_ptr()
                 .unwrap();
-            view.setFrame(frame.ptr()).as_result()?;
+            view.setFrame(frame.as_ptr()).as_result()?;
             std::mem::forget(frame);
             Ok(View::new(view))
         }
@@ -211,10 +226,10 @@ impl Editor {
         .to_com_ptr()
         .unwrap();
         unsafe {
-            self.editor
-                .setComponentHandler(wrapper.as_ptr())
-                .as_result()
-        }
+            self.editor.setComponentHandler(wrapper.as_ptr()).as_result()?;
+        };
+        mem::forget(wrapper);
+        Ok(())
     }
 }
 

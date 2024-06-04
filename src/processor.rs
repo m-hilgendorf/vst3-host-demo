@@ -7,11 +7,12 @@ use crate::{
 };
 use bitflags::bitflags;
 use std::{
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     os::raw::c_void,
     ptr::{addr_of_mut, null_mut},
 };
 use vst3::{
+    com_scrape_types::SmartPtr,
     ComPtr, ComWrapper,
     Steinberg::{
         kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult, FUnknown, FUnknownVtbl,
@@ -29,6 +30,7 @@ use vst3::{
 };
 
 /// Wrapper around the audio processor implementation of a plugin.
+#[derive(Clone)]
 pub struct Processor {
     component: ComPtr<IComponent>,
     processor: ComPtr<IAudioProcessor>,
@@ -157,13 +159,32 @@ impl Processor {
 }
 
 impl Processor {
+    #[cfg(not(target_os = "linux"))]
     pub fn initialize(&self, host: impl HostApplication + 'static) -> Result<(), Error> {
-        let host = ComWrapper::new(HostApplicationWrapper {
-            host: Box::new(host),
-        })
-        .to_com_ptr()
-        .unwrap();
-        unsafe { self.component.initialize(host.as_ptr()).as_result() }
+        let host = HostApplicationWrapper::new(host)?;
+        let host = ComWrapper::new(host).to_com_ptr().unwrap();
+        let ptr = host.ptr();
+        unsafe {
+            self.component.initialize(ptr).as_result()?;
+        }
+        mem::forget(host);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn initialize(
+        &self,
+        host: impl HostApplication + 'static,
+        callback: impl Fn(crate::run_loop::MainThreadEvent) + Send + Sync + 'static,
+    ) -> Result<(), Error> {
+        let host = HostApplicationWrapper::new(host, callback)?;
+        let host = ComWrapper::new(host).to_com_ptr().unwrap();
+        let ptr = host.ptr();
+        unsafe {
+            self.component.initialize(ptr).as_result()?;
+        }
+        mem::forget(host);
+        Ok(())
     }
 
     pub fn terminate(&self) -> Result<(), Error> {
@@ -230,17 +251,20 @@ impl Processor {
     pub fn set_state(&self, state: &[u8]) -> Result<(), Error> {
         let state = StateStream::from(state);
         let state = ComWrapper::new(state);
-        let state = state.to_com_ptr().unwrap();
-        unsafe { self.component.setState(state.as_ptr()).as_result() }
+        unsafe {
+            self.component
+                .setState(state.as_com_ref().unwrap().ptr())
+                .as_result()?;
+        }
+        Ok(())
     }
 
     /// Get the state of the plugin. Not real time safe.
     pub fn get_state(&self) -> Result<Vec<u8>, Error> {
-        let state = StateStream::default();
-        let state = ComWrapper::new(state);
+        let state = ComWrapper::new(StateStream::default());
         unsafe {
-            let state = state.to_com_ptr().unwrap();
-            self.component.getState(state.as_ptr()).as_result()?;
+            let state = state.as_com_ref().unwrap();
+            self.component.getState(state.ptr()).as_result()?;
         };
         Ok(state.data())
     }

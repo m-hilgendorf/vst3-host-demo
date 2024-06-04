@@ -1,7 +1,7 @@
 use crate::error::Error;
 use core::slice;
 use std::ffi::c_char;
-use vst3::Steinberg::{Vst::String128, TUID};
+use vst3::Steinberg::TUID;
 
 pub trait ToRustString {
     fn to_rust_string(&self) -> String;

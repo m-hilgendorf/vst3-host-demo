@@ -13,29 +13,41 @@ use vst3::{
     Steinberg::Linux::{IEventHandler, IEventHandlerTrait, ITimerHandler, ITimerHandlerTrait},
 };
 
+pub struct MainThreadEvent {
+    context: Either<(ComPtr<IEventHandler>, i32), ComPtr<ITimerHandler>>,
+}
+
+impl MainThreadEvent {
+    pub fn handle(self) {
+        match self.context {
+            Either::Left((handler, fd)) => unsafe {
+                handler.onFDIsSet(fd);
+            },
+            Either::Right(handler) => unsafe {
+                handler.onTimer();
+            },
+        }
+    }
+}
+
 pub(crate) struct RunLoop {
     inner: Arc<RwLock<Inner>>,
 }
 
 struct Inner {
-    epollfd: OwnedFd,
+    main_thread_callback: Box<dyn Fn(MainThreadEvent) + Sync + Send + 'static>,
     handlers: Vec<(i32, Either<ComPtr<IEventHandler>, ComPtr<ITimerHandler>>)>,
     worker_thread: Option<JoinHandle<std::io::Result<()>>>,
     shutdown: bool,
 }
 
 impl RunLoop {
-    pub fn new() -> std::io::Result<Self> {
-        let epollfd = unsafe {
-            let fd = libc::epoll_create1(0);
-            if fd < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            OwnedFd::from_raw_fd(fd)
-        };
+    pub fn new(
+        main_thread_callback: impl Fn(MainThreadEvent) + Sync + Send + 'static,
+    ) -> std::io::Result<Self> {
         let handlers = vec![];
         let inner = Inner {
-            epollfd,
+            main_thread_callback: Box::new(main_thread_callback),
             handlers,
             worker_thread: None,
             shutdown: false,
@@ -45,7 +57,11 @@ impl RunLoop {
         };
         let thread = std::thread::spawn({
             let run_loop = run_loop.clone();
-            move || run_loop.worker_thread()
+            move || {
+                run_loop
+                    .worker_thread()
+                    .inspect_err(|error| eprintln!("run loop failed: {error}"))
+            }
         });
         run_loop
             .inner
@@ -61,8 +77,9 @@ impl RunLoop {
         handler: ComPtr<IEventHandler>,
         fd: i32,
     ) -> std::io::Result<()> {
-        eprintln!("event handler {fd}");
-        self.register_fd(fd)?;
+        let ptr = handler.as_ptr();
+        let vtbl = unsafe { (*handler.ptr()).vtbl };
+        eprintln!("IEventHandler*: {fd} {ptr:?} {vtbl:?}");
         self.inner
             .write()
             .unwrap()
@@ -77,22 +94,19 @@ impl RunLoop {
             let Either::Left(handler_) = handler_ else {
                 return false;
             };
-            handler_.ptr() == handler.ptr()
+            handler_.as_ptr() == handler.as_ptr()
         }) else {
             return;
         };
-        let (fd, _) = inner.handlers.remove(index);
-        drop(inner);
-        self.unregister_fd(fd).ok();
+        inner.handlers.remove(index);
     }
 
     pub fn register_timer(&self, handler: ComPtr<ITimerHandler>, ms: u64) -> std::io::Result<()> {
-        eprintln!("timer handler {ms}");
         unsafe {
             let fd =
                 libc::timerfd_create(libc::CLOCK_REALTIME, libc::TFD_NONBLOCK | libc::TFD_CLOEXEC);
             if fd < 0 {
-                return (Err(std::io::Error::last_os_error()));
+                return Err(std::io::Error::last_os_error());
             }
             let value = libc::itimerspec {
                 it_interval: libc::timespec {
@@ -108,7 +122,6 @@ impl RunLoop {
             if ec < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            self.register_fd(fd)?;
             self.inner
                 .write()
                 .unwrap()
@@ -124,115 +137,51 @@ impl RunLoop {
             let Either::Right(handler_) = handler_ else {
                 return false;
             };
-            handler_.ptr() == handler.ptr()
+            handler_.as_ptr() == handler.as_ptr()
         }) else {
             return;
         };
         let (fd, _) = inner.handlers.remove(index);
-        drop(inner);
         unsafe {
             libc::close(fd);
-        }
-        self.unregister_fd(fd).ok();
-    }
-
-    fn register_fd(&self, fd: i32) -> std::io::Result<()> {
-        unsafe {
-            #[repr(C)]
-            union U {
-                fd: i32,
-                u64: u64,
-            };
-            let u = U { fd };
-            let mut ev = epoll_event {
-                events: libc::EPOLLIN as _,
-                u64: u.u64,
-            };
-            let inner = self.inner.write().unwrap();
-            if libc::epoll_ctl(
-                inner.epollfd.as_raw_fd(),
-                libc::EPOLL_CTL_ADD,
-                fd,
-                addr_of_mut!(ev),
-            ) < 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        }
-    }
-
-    fn unregister_fd(&self, fd: i32) -> std::io::Result<()> {
-        unsafe {
-            #[repr(C)]
-            union U {
-                fd: i32,
-                u64: u64,
-            };
-            let u = U { fd };
-            let mut ev = epoll_event {
-                events: libc::EPOLLIN as _,
-                u64: u.u64,
-            };
-            let inner = self.inner.write().unwrap();
-            if libc::epoll_ctl(
-                inner.epollfd.as_raw_fd(),
-                libc::EPOLL_CTL_DEL,
-                fd,
-                addr_of_mut!(ev),
-            ) < 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
         }
     }
 
     fn worker_thread(&self) -> std::io::Result<()> {
         unsafe {
-            let mut clock_granularity = MaybeUninit::zeroed();
-            libc::clock_getres(libc::CLOCK_MONOTONIC, clock_granularity.as_mut_ptr());
-            let clock_granularity = clock_granularity.assume_init();
-            let timeout = 1_000_000 / clock_granularity.tv_nsec;
-            let mut events: [libc::epoll_event; 64] = MaybeUninit::zeroed().assume_init();
+            let mut pollfds = vec![];
             loop {
                 let inner = self.inner.read().unwrap();
                 if inner.shutdown {
                     break;
                 }
-                let nfds = libc::epoll_wait(
-                    inner.epollfd.as_raw_fd(),
-                    events.as_mut_ptr(),
-                    events.len().try_into().unwrap(),
-                    timeout as _,
-                );
+                pollfds.clear();
+                pollfds.reserve(inner.handlers.len());
+                for (fd, _) in &inner.handlers {
+                    pollfds.push(libc::pollfd {
+                        fd: *fd,
+                        events: libc::POLLIN | libc::POLLOUT | libc::POLLERR | libc::POLLPRI,
+                        revents: 0,
+                    });
+                }
+                drop(inner);
+                let nfds = libc::poll(pollfds.as_mut_ptr(), pollfds.len().try_into().unwrap(), 0);
                 if nfds < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 for idx in 0..nfds.try_into().unwrap() {
-                    union U {
-                        fd: i32,
-                        u64: u64,
-                    };
-                    let u = U {
-                        u64: events[idx].u64,
-                    };
-                    eprintln!("handling event on {}", u.fd);
+                    let inner = self.inner.read().unwrap();
+                    let fd = pollfds[idx].fd;
+                    // eprintln!("handling event {fd}, revents: {}", pollfds[idx].revents);
                     let Some(handler) = inner
                         .handlers
                         .iter()
-                        .find_map(|(fd, handler)| (*fd == u.fd).then_some(handler))
+                        .find_map(|(fd_, handler)| (*fd_ == fd).then_some(handler))
                     else {
                         continue;
                     };
-                    match handler {
-                        Either::Left(handler) => {
-                            handler.onFDIsSet(u.fd);
-                        }
-                        Either::Right(handler) => {
-                            handler.onTimer();
-                        }
-                    }
+                    let context = handler.clone().map_left(|handler| (handler, fd));
+                    (inner.main_thread_callback)(MainThreadEvent { context });
                 }
             }
             Ok(())

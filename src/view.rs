@@ -1,6 +1,5 @@
 use std::{mem::MaybeUninit, os::raw::c_void};
-
-use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+use winit::raw_window_handle::RawWindowHandle;
 use vst3::{
     Class, ComPtr,
     Steinberg::{
@@ -26,9 +25,10 @@ pub(crate) struct PlugFrameWrapper {
     run_loop: crate::run_loop::RunLoop,
 }
 
+
 impl Drop for PlugFrameWrapper {
     fn drop(&mut self) {
-        eprintln!("dropping plug frame");
+        eprintln!("PlugFrameWrapper::drop");
     }
 }
 
@@ -40,9 +40,12 @@ impl PlugFrameWrapper {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn new(plug_frame: impl PlugFrame + 'static) -> Result<Self, Error> {
+    pub(crate) fn new(
+        plug_frame: impl PlugFrame + 'static,
+        callback: impl Fn(crate::run_loop::MainThreadEvent) + Send + Sync + 'static,
+    ) -> Result<Self, Error> {
         let plug_frame = Box::new(plug_frame);
-        let run_loop = crate::run_loop::RunLoop::new().map_err(|error| {
+        let run_loop = crate::run_loop::RunLoop::new(callback).map_err(|error| {
             tracing::error!(%error, "failed to create run loop");
             Error::Internal
         })?;
@@ -136,20 +139,20 @@ impl View {
         Self { view }
     }
 
-    pub fn attach(&self, window: &impl HasRawWindowHandle) -> Result<(), Error> {
-        match window.raw_window_handle() {
+    pub fn attach(&self, window: RawWindowHandle) -> Result<(), Error> {
+        match window {
             RawWindowHandle::Win32(win32) => unsafe {
                 self.view
-                    .attached(win32.hwnd, kPlatformTypeHWND)
+                    .attached(win32.hwnd.get() as *mut c_void, kPlatformTypeHWND)
                     .as_result()?;
             },
             RawWindowHandle::AppKit(appkit) => unsafe {
                 self.view
-                    .attached(appkit.ns_view, kPlatformTypeNSView)
+                    .attached(appkit.ns_view.as_ptr(), kPlatformTypeNSView)
                     .as_result()?;
             },
             RawWindowHandle::Xcb(xcb) => unsafe {
-                let handle = xcb.window as usize as *mut c_void;
+                let handle = xcb.window.get() as usize as *mut c_void;
                 self.view
                     .attached(handle, kPlatformTypeX11EmbedWindowID)
                     .as_result()?;
@@ -160,23 +163,18 @@ impl View {
                     .attached(handle, kPlatformTypeX11EmbedWindowID)
                     .as_result()?;
             },
-
-            other => {
-                eprintln!("window handle: {other:?}");
+            _ => {
                 return Err(Error::NotImplemented);
             }
         }
         Ok(())
     }
 
-    pub fn size(&self) -> Result<baseview::Size, Error> {
+    pub fn size(&self) -> Result<ViewRect, Error> {
         unsafe {
             let mut rect = MaybeUninit::zeroed();
             self.view.getSize(rect.as_mut_ptr()).as_result()?;
-            let rect = rect.assume_init();
-            let width = (rect.right - rect.left) as _;
-            let height = (rect.bottom - rect.top) as _;
-            Ok(baseview::Size { width, height })
+            Ok(rect.assume_init())
         }
     }
 }

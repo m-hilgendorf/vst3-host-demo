@@ -1,17 +1,11 @@
 use std::{
-    io::Write,
-    sync::atomic::{AtomicBool, Ordering},
-    thread,
-    time::Duration,
+    io::Write, sync::atomic::{AtomicBool, Ordering}, thread, time::Duration
 };
 
 use vst3_host::{
-    application::HostApplication,
-    component::{BusDirection, ComponentHandler, MediaType},
-    processor::{IoMode, ProcessMode, Processor},
-    scanner::*,
-    view::PlugFrame,
+    application::HostApplication, component::{BusDirection, ComponentHandler, MediaType}, editor::Editor, processor::{IoMode, ProcessMode, Processor}, run_loop::MainThreadEvent, scanner::*, view::{PlugFrame, View}
 };
+use winit::{application::ApplicationHandler, dpi::{LogicalPosition, LogicalSize, Position, Size}, event::WindowEvent, event_loop::{EventLoop, EventLoopProxy}, platform::wayland::WindowAttributesExtWayland, raw_window_handle::HasWindowHandle, window::{Window, WindowAttributes}};
 
 struct Host;
 impl HostApplication for Host {
@@ -24,6 +18,7 @@ struct Frame;
 impl PlugFrame for Frame {}
 
 struct Handler;
+
 impl ComponentHandler for Handler {
     fn begin_edit(&self, id: u32) -> Result<(), vst3_host::error::Error> {
         eprintln!("begin edit {id}");
@@ -80,12 +75,84 @@ impl ComponentHandler for Handler {
 }
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
-fn main() {
-    #[cfg(target_os = "linux")]
-    unsafe {
-        x11::xlib::XInitThreads();
+
+struct App {
+    name: String,
+    processor: Processor,
+    editor: Editor,
+    view: View,
+    window: Option<Window>
+}
+
+impl ApplicationHandler<MainThreadEvent> for App {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+
+        let size = self.view.size().unwrap();
+        let attr = WindowAttributes::default()
+            .with_name("Plugin Host", self.name.as_str())
+            .with_inner_size(LogicalSize {
+                width: (size.left - size.right).abs(),
+                height: (size.bottom - size.top).abs()
+            })
+            .with_position(LogicalPosition {
+                x: size.left,
+                y: size.top
+            });
+        let Ok(window) = event_loop.create_window(attr) else {
+            return;
+        };
+
+        let handle = window.window_handle().unwrap();
+        self.view.attach(handle.as_raw()).unwrap();
+        self.window.replace(window);
     }
 
+    fn window_event(
+            &mut self,
+            event_loop: &winit::event_loop::ActiveEventLoop,
+            _window_id: winit::window::WindowId,
+            event: winit::event::WindowEvent,
+        ) {
+        eprintln!("{event:?}");
+        if let WindowEvent::CloseRequested = event {
+            event_loop.exit();
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: MainThreadEvent) {
+        event.handle();
+    }
+
+    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        eprintln!("exiting.");
+    }
+}
+
+fn main() {
+    // Create the event loop (linux)
+    let event_loop: EventLoop<MainThreadEvent> = EventLoop::with_user_event()
+        .build()
+        .unwrap();
+
+    // Create the proxies for IRunLoop implementation
+    let proxy: EventLoopProxy<MainThreadEvent> = event_loop.create_proxy();
+    let host_callback = {
+        let proxy = proxy.clone();
+        move |event: MainThreadEvent| {
+            proxy.send_event(event).ok();
+        }
+    };
+    let frame_callback = {
+        let proxy = proxy.clone();
+        move |event: MainThreadEvent| {
+            proxy.send_event(event).ok();
+        }
+    };
+
+    // Scan for plugins and select from the list
     let scanner = Scanner::scan_recursively(&default_search_paths());
     println!("select a plugin to load.");
     for (i, plugin) in scanner.plugins().enumerate() {
@@ -97,6 +164,7 @@ fn main() {
     }
     let plugin = scanner.plugins().nth(select()).expect("invalid selection");
 
+    // Instantiate the processor and editor.
     let (processor, editor) = plugin
         .create_instance()
         .expect("Failed to instantiate plugin");
@@ -107,7 +175,7 @@ fn main() {
     // Initialize.
     // According to Steinberg this happens after set_io_mode?
     processor
-        .initialize(Host)
+        .initialize(Host, host_callback)
         .expect("failed to initialize plugin");
 
     // Set the component handler.
@@ -116,10 +184,6 @@ fn main() {
         .expect("Failed to set the component handler.");
 
     // Connect.
-    // We can't assume that the plugin and editor know about each other so we need to attempt to
-    // make a connection between them. This is almost guaranteed to return an error because
-    // most plugins aren't designed like they're running on a different computer, so the processor
-    // and editor probably know about each other and this method is pointless.
     processor.connect(&editor);
 
     // Synchronize by reading the processor's state and then setting it on the editor. JUCE plugins
@@ -127,42 +191,29 @@ fn main() {
     processor.synchronize(&editor);
 
     // Now we can diverge the audio processing code from the main thread.
-    let processor_thread = thread::spawn(|| processor_call_sequence(processor));
+    let processor_thread = thread::spawn({
+        let processor = processor.clone();
+        || processor_call_sequence(processor)
+    });
 
     // To create a GUI we first create a view.
-    let Ok(view) = editor.create_view(Frame) else {
+    let Ok(view) = editor.create_view(Frame, frame_callback) else {
         SHUTDOWN.store(true, Ordering::Relaxed);
         processor_thread.join().ok();
         eprintln!("no view, exiting");
         return;
     };
 
-    // Create a window
-    struct WindowHandler;
-    impl baseview::WindowHandler for WindowHandler {
-        fn on_frame(&mut self, _window: &mut baseview::Window) {}
-        fn on_event(
-            &mut self,
-            _window: &mut baseview::Window,
-            _event: baseview::Event,
-        ) -> baseview::EventStatus {
-            baseview::EventStatus::Ignored
-        }
-    }
+    // Create the application.
+    let mut app = App {
+        processor,
+        name: plugin.name.into(),
+        editor,
+        view,
+        window: None
+    };
 
-    // Attach the window to the plugin.
-    baseview::Window::open_blocking(
-        baseview::WindowOpenOptions {
-            title: plugin.name.into(),
-            size: view.size().unwrap(),
-            scale: baseview::WindowScalePolicy::SystemScaleFactor,
-        },
-        move |window| {
-            view.attach(window).unwrap();
-            WindowHandler
-        },
-    );
-
+    event_loop.run_app(&mut app).unwrap();
     SHUTDOWN.store(true, Ordering::Relaxed);
     processor_thread.join().ok();
 }
