@@ -11,7 +11,7 @@ use winit::{
     dpi::{LogicalPosition, LogicalSize},
     event::WindowEvent,
     event_loop::EventLoop,
-    platform::wayland::WindowAttributesExtWayland,
+    platform::{wayland::WindowAttributesExtWayland, x11::EventLoopBuilderExtX11},
     raw_window_handle::HasWindowHandle,
     window::{Window, WindowAttributes},
 };
@@ -75,6 +75,7 @@ impl vst::ComponentHandler for Handler {
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 struct App {
+    host: vst::Host,
     name: String,
     _processor: vst::Processor,
     _editor: vst::Editor,
@@ -95,6 +96,8 @@ impl ApplicationHandler<vst::MainThreadEvent> for App {
                 width: (size.left - size.right).abs(),
                 height: (size.bottom - size.top).abs(),
             })
+            .with_resizable(self.view.is_resizeable())
+            .with_title(self.name.as_str())
             .with_position(LogicalPosition {
                 x: size.left,
                 y: size.top,
@@ -114,7 +117,6 @@ impl ApplicationHandler<vst::MainThreadEvent> for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        eprintln!("{event:?}");
         if let WindowEvent::CloseRequested = event {
             event_loop.exit();
         }
@@ -128,8 +130,11 @@ impl ApplicationHandler<vst::MainThreadEvent> for App {
         event.handle();
     }
 
-    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-        eprintln!("exiting.");
+    fn exiting(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        eprintln!("stopped event loop");
+        self.view.removed();
+        #[cfg(target_os = "linux")]
+        self.host.stop_run_loop();
     }
 }
 
@@ -142,7 +147,7 @@ fn main() {
         .unwrap();
 
     // Create the event loop.
-    let event_loop = EventLoop::with_user_event().build().unwrap();
+    let event_loop = EventLoop::with_user_event().with_x11().build().unwrap();
 
     // Create the VST Host.
     let mut host = vst::Host::builder()
@@ -153,14 +158,16 @@ fn main() {
             {
                 let proxy = event_loop.create_proxy();
                 move |event| {
-                    proxy.send_event(event).ok();
+                    proxy
+                        .send_event(event)
+                        .inspect_err(|error| eprintln!("failed to send event to main thread"))
+                        .ok();
                 }
             },
         );
 
-    // Scan for the first available plugin.
+    // Scan the plugin.
     host.scan(&path).expect("failed to scan plugin");
-
     let plugin = host
         .plugins()
         .find(|plugin| plugin.path == path.as_path())
@@ -207,9 +214,12 @@ fn main() {
     };
 
     // Create the application.
+    let name = plugin.name.to_owned();
+    drop(plugin);
     let mut app = App {
+        host,
         _processor: processor,
-        name: plugin.name.into(),
+        name,
         _editor: editor,
         view,
         window: None,

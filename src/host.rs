@@ -135,6 +135,12 @@ impl Host {
         paths
     }
 
+    /// Stop the run loop (linux only)
+    #[cfg(target_os = "linux")]
+    pub fn stop_run_loop(&self) {
+        self.run_loop.stop();
+    }
+
     /// Create a [Builder].
     pub fn builder() -> Builder {
         Builder::new()

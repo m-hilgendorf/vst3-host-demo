@@ -1,6 +1,7 @@
 use either::Either;
 use std::{
-    ptr::{addr_of, null_mut},
+    mem::MaybeUninit,
+    ptr::{addr_of, addr_of_mut, null_mut},
     sync::{Arc, RwLock},
     thread::JoinHandle,
 };
@@ -23,6 +24,7 @@ struct Inner {
     handlers: Vec<(i32, Either<ComPtr<IEventHandler>, ComPtr<ITimerHandler>>)>,
     worker_thread: Option<JoinHandle<std::io::Result<()>>>,
     shutdown: bool,
+    timeout: i32,
 }
 
 impl RunLoop {
@@ -35,6 +37,7 @@ impl RunLoop {
             handlers,
             worker_thread: None,
             shutdown: false,
+            timeout: -1,
         };
         let run_loop = Self {
             inner: Arc::new(RwLock::new(inner)),
@@ -61,14 +64,21 @@ impl RunLoop {
         handler: ComPtr<IEventHandler>,
         fd: i32,
     ) -> std::io::Result<()> {
-        let ptr = handler.as_ptr();
-        let vtbl = unsafe { (*handler.ptr()).vtbl };
-        eprintln!("IEventHandler*: {fd} {ptr:?} {vtbl:?}");
-        self.inner
-            .write()
-            .unwrap()
-            .handlers
-            .push((fd, Either::Left(handler)));
+        unsafe {
+            let mut buf = MaybeUninit::zeroed();
+            if libc::fstat(fd, buf.as_mut_ptr()) == 0 {
+                let buf = buf.assume_init();
+                let mode = buf.st_mode;
+                eprintln!("{fd:2}.mode {mode:08o}");
+            }
+            let mut fcntl = 0i32;
+            if libc::fcntl(fd, libc::F_GETFL, addr_of_mut!(buf)) != 0 {
+                eprintln!("{fd:2}.fcntl {fcntl:08o}");
+            }
+        }
+        let mut inner = self.inner.write().unwrap();
+        inner.handlers.push((fd, Either::Left(handler)));
+        inner.timeout = 0;
         Ok(())
     }
 
@@ -131,6 +141,35 @@ impl RunLoop {
         }
     }
 
+    pub(crate) fn stop(&self) {
+        {
+            self.inner.write().unwrap().shutdown = true;
+        }
+        let thread = self.inner.write().unwrap().worker_thread.take();
+        if let Some(thread) = thread {
+            thread.join().ok();
+            let inner = self.inner.read().unwrap();
+            for (fd, handler) in &inner.handlers {
+                if handler.is_right() {
+                    unsafe {
+                        libc::close(*fd);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn remove_listeners(&self, fds: impl IntoIterator<Item = i32>) {
+        let mut inner = self.inner.write().unwrap();
+        for fd in fds {
+            let Some(position) = inner.handlers.iter().position(|(fd_, _)| *fd_ == fd) else {
+                continue;
+            };
+
+            inner.handlers.remove(position);
+        }
+    }
+
     fn worker_thread(&self) -> std::io::Result<()> {
         unsafe {
             let mut pollfds = vec![];
@@ -144,18 +183,19 @@ impl RunLoop {
                 for (fd, _) in &inner.handlers {
                     pollfds.push(libc::pollfd {
                         fd: *fd,
-                        events: libc::POLLIN | libc::POLLOUT | libc::POLLERR | libc::POLLPRI,
+                        events: libc::POLLIN,
                         revents: 0,
                     });
                 }
                 drop(inner);
-                let nfds = libc::poll(pollfds.as_mut_ptr(), pollfds.len().try_into().unwrap(), 0);
+                let nfds = libc::poll(pollfds.as_mut_ptr(), pollfds.len().try_into().unwrap(), 200);
                 if nfds < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 for idx in 0..nfds.try_into().unwrap() {
                     let inner = self.inner.read().unwrap();
                     let fd = pollfds[idx].fd;
+                    // eprintln!("{fd} event");
                     // eprintln!("handling event {fd}, revents: {}", pollfds[idx].revents);
                     let Some(handler) = inner
                         .handlers
@@ -167,6 +207,7 @@ impl RunLoop {
                     let context = handler.clone().map_left(|handler| (handler, fd));
                     (inner.main_thread_callback)(MainThreadEvent { context });
                 }
+                self.inner.write().unwrap().timeout = -1;
             }
             Ok(())
         }
@@ -183,19 +224,7 @@ impl Clone for RunLoop {
 
 impl Drop for RunLoop {
     fn drop(&mut self) {
-        self.inner.write().unwrap().shutdown = true;
-        let thread = self.inner.write().unwrap().worker_thread.take();
-        if let Some(thread) = thread {
-            thread.join().ok();
-            let inner = self.inner.write().unwrap();
-            for (fd, handler) in &inner.handlers {
-                if handler.is_right() {
-                    unsafe {
-                        libc::close(*fd);
-                    }
-                }
-            }
-        }
+        self.stop();
     }
 }
 

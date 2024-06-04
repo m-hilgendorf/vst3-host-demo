@@ -1,11 +1,3 @@
-use core::slice;
-use std::{
-    mem::{self, MaybeUninit},
-    os::raw::c_void,
-    ptr::addr_of_mut,
-    sync::Mutex,
-};
-
 use crate::{
     component::{ComponentHandler, ComponentHandlerWrapper},
     error::{Error, ToResultExt},
@@ -14,6 +6,14 @@ use crate::{
     view::{PlugFrame, PlugFrameWrapper, View},
 };
 use bitflags::bitflags;
+use core::slice;
+use std::{
+    marker::PhantomData,
+    mem::{self, MaybeUninit},
+    os::raw::c_void,
+    ptr::addr_of_mut,
+    sync::Mutex,
+};
 use vst3::{
     Class, ComPtr, ComWrapper,
     Steinberg::{
@@ -27,11 +27,13 @@ use vst3::{
     },
 };
 
-/// Represents the edit controller of a plugin.
+/// Represents the edit controller of a plugin. This type is not `Send` or `Sync`, as each method
+/// **MUST** be called on the main thread.
 pub struct Editor {
     editor: ComPtr<IEditController>,
     editor2: Option<ComPtr<IEditController2>>,
     pub(crate) connection: Option<ComPtr<IConnectionPoint>>,
+    _marker: PhantomData<*mut ()>,
 }
 
 #[repr(i32)]
@@ -74,6 +76,7 @@ impl Editor {
             editor,
             editor2,
             connection,
+            _marker: PhantomData::default(),
         }
     }
 

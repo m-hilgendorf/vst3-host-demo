@@ -1,9 +1,13 @@
-use std::{mem::MaybeUninit, os::raw::c_void};
+use std::{
+    mem::MaybeUninit,
+    os::raw::c_void,
+    sync::{Arc, Mutex},
+};
 use vst3::{
     Class, ComPtr,
     Steinberg::{
         kInvalidArgument, kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID,
-        kResultOk, IPlugFrame, IPlugFrameTrait, IPlugView, IPlugViewTrait, ViewRect,
+        kResultOk, kResultTrue, IPlugFrame, IPlugFrameTrait, IPlugView, IPlugViewTrait, ViewRect,
     },
 };
 use winit::raw_window_handle::RawWindowHandle;
@@ -20,14 +24,13 @@ pub trait PlugFrame {
 
 pub(crate) struct PlugFrameWrapper {
     plug_frame: Box<dyn PlugFrame>,
+    fds: Arc<Mutex<Vec<f32>>>,
     #[cfg(target_os = "linux")]
     run_loop: crate::run_loop::RunLoop,
 }
 
 impl Drop for PlugFrameWrapper {
-    fn drop(&mut self) {
-        eprintln!("PlugFrameWrapper::drop");
-    }
+    fn drop(&mut self) {}
 }
 
 impl PlugFrameWrapper {
@@ -36,8 +39,10 @@ impl PlugFrameWrapper {
         #[cfg(target_os = "linux")] run_loop: crate::run_loop::RunLoop,
     ) -> Result<Self, Error> {
         let plug_frame = Box::new(plug_frame);
+        let fds = Arc::new(Mutex::new(Vec::new()));
         Ok(Self {
             plug_frame,
+            fds,
             #[cfg(target_os = "linux")]
             run_loop,
         })
@@ -158,11 +163,21 @@ impl View {
         Ok(())
     }
 
+    pub fn removed(&self) {
+        unsafe {
+            self.view.removed();
+        }
+    }
+
     pub fn size(&self) -> Result<ViewRect, Error> {
         unsafe {
             let mut rect = MaybeUninit::zeroed();
             self.view.getSize(rect.as_mut_ptr()).as_result()?;
             Ok(rect.assume_init())
         }
+    }
+
+    pub fn is_resizeable(&self) -> bool {
+        unsafe { self.view.canResize() == kResultTrue }
     }
 }
