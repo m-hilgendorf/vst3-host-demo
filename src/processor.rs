@@ -1,13 +1,14 @@
 use crate::{
-    application::{HostApplication, HostApplicationWrapper},
     component::{BusDirection, MediaType},
     editor::{Editor, StateStream},
     error::{Error, ToResultExt},
+    host::HostApplicationImpl,
+    prelude::Host,
     util::ToRustString,
 };
 use bitflags::bitflags;
 use std::{
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     os::raw::c_void,
     ptr::{addr_of_mut, null_mut},
 };
@@ -66,39 +67,15 @@ pub struct RoutingInfo {
     pub channel: i32,
 }
 
-#[repr(i32)]
-pub enum BusType {
-    Aux = BusTypes_::kAux as _,
-    Main = BusTypes_::kMain as _,
-}
-
-impl TryFrom<i32> for BusType {
-    type Error = Error;
-    fn try_from(value: i32) -> Result<Self, Error> {
-        match value as _ {
-            BusTypes_::kAux => Ok(Self::Aux),
-            BusTypes_::kMain => Ok(Self::Main),
-            _ => Err(Error::InvalidArg),
-        }
-    }
-}
-
-bitflags! {
-    pub struct BusFlags: u32 {
-        const DefaultActive = BusFlags_::kDefaultActive as _;
-        const ControlVoltage = BusFlags_::kIsControlVoltage as _;
-    }
-}
-
 #[repr(C)]
-pub struct InputParameterChanges<'a> {
+struct InputParameterChanges<'a> {
     vtbl: *const IParamValueQueueVtbl,
     points: &'a [(i32, f64)],
     id: u32,
 }
 
-pub struct OutputParameterChanges<'a> {
-    vtbl: *const IParamValueQueueVtbl,
+struct OutputParameterChanges<'a> {
+    _vtbl: *const IParamValueQueueVtbl,
     points: &'a mut [(i32, f64)],
     len: usize,
     id: u32,
@@ -146,6 +123,30 @@ pub struct ProcessData<'a> {
     pub context: Option<&'a mut ProcessContext>,
 }
 
+#[repr(i32)]
+pub enum BusType {
+    Aux = BusTypes_::kAux as _,
+    Main = BusTypes_::kMain as _,
+}
+
+impl TryFrom<i32> for BusType {
+    type Error = Error;
+    fn try_from(value: i32) -> Result<Self, Error> {
+        match value as _ {
+            BusTypes_::kAux => Ok(Self::Aux),
+            BusTypes_::kMain => Ok(Self::Main),
+            _ => Err(Error::InvalidArg),
+        }
+    }
+}
+
+bitflags! {
+    pub struct BusFlags: u32 {
+        const DefaultActive = BusFlags_::kDefaultActive as _;
+        const ControlVoltage = BusFlags_::kIsControlVoltage as _;
+    }
+}
+
 impl Processor {
     pub(crate) fn new(component: ComPtr<IComponent>) -> Result<Self, Error> {
         let processor = component.cast().ok_or(Error::NoInterface)?;
@@ -159,31 +160,14 @@ impl Processor {
 }
 
 impl Processor {
-    #[cfg(not(target_os = "linux"))]
-    pub fn initialize(&self, host: impl HostApplication + 'static) -> Result<(), Error> {
-        let host = HostApplicationWrapper::new(host)?;
-        let host = ComWrapper::new(host).to_com_ptr().unwrap();
+    pub fn initialize(&self, host: &Host) -> Result<(), Error> {
+        let host = ComWrapper::new(HostApplicationImpl::new(host)?)
+            .to_com_ptr()
+            .unwrap();
         let ptr = host.ptr();
         unsafe {
             self.component.initialize(ptr).as_result()?;
         }
-        mem::forget(host);
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    pub fn initialize(
-        &self,
-        host: impl HostApplication + 'static,
-        callback: impl Fn(crate::run_loop::MainThreadEvent) + Send + Sync + 'static,
-    ) -> Result<(), Error> {
-        let host = HostApplicationWrapper::new(host, callback)?;
-        let host = ComWrapper::new(host).to_com_ptr().unwrap();
-        let ptr = host.ptr();
-        unsafe {
-            self.component.initialize(ptr).as_result()?;
-        }
-        mem::forget(host);
         Ok(())
     }
 
@@ -689,7 +673,7 @@ impl<'a> OutputParameterChangesInterface<'a> {
 impl<'a> OutputParameterChanges<'a> {
     pub fn new(id: u32, points: &'a mut [(i32, f64)]) -> Self {
         Self {
-            vtbl: &Self::VTBL as *const _,
+            _vtbl: &Self::VTBL as *const _,
             len: 0,
             points,
             id,

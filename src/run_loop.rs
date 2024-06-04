@@ -1,9 +1,6 @@
 use either::Either;
-use libc::epoll_event;
 use std::{
-    mem::MaybeUninit,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
-    ptr::{addr_of, addr_of_mut, null_mut},
+    ptr::{addr_of, null_mut},
     sync::{Arc, RwLock},
     thread::JoinHandle,
 };
@@ -13,25 +10,12 @@ use vst3::{
     Steinberg::Linux::{IEventHandler, IEventHandlerTrait, ITimerHandler, ITimerHandlerTrait},
 };
 
-pub struct MainThreadEvent {
-    context: Either<(ComPtr<IEventHandler>, i32), ComPtr<ITimerHandler>>,
-}
-
-impl MainThreadEvent {
-    pub fn handle(self) {
-        match self.context {
-            Either::Left((handler, fd)) => unsafe {
-                handler.onFDIsSet(fd);
-            },
-            Either::Right(handler) => unsafe {
-                handler.onTimer();
-            },
-        }
-    }
-}
-
 pub(crate) struct RunLoop {
     inner: Arc<RwLock<Inner>>,
+}
+
+pub struct MainThreadEvent {
+    context: Either<(ComPtr<IEventHandler>, i32), ComPtr<ITimerHandler>>,
 }
 
 struct Inner {
@@ -211,6 +195,19 @@ impl Drop for RunLoop {
                     }
                 }
             }
+        }
+    }
+}
+
+impl MainThreadEvent {
+    pub fn handle(self) {
+        match self.context {
+            Either::Left((handler, fd)) => unsafe {
+                handler.onFDIsSet(fd);
+            },
+            Either::Right(handler) => unsafe {
+                handler.onTimer();
+            },
         }
     }
 }

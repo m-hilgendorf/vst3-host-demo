@@ -1,5 +1,4 @@
 use std::{mem::MaybeUninit, os::raw::c_void};
-use winit::raw_window_handle::RawWindowHandle;
 use vst3::{
     Class, ComPtr,
     Steinberg::{
@@ -7,11 +6,11 @@ use vst3::{
         kResultOk, IPlugFrame, IPlugFrameTrait, IPlugView, IPlugViewTrait, ViewRect,
     },
 };
-
-#[cfg(target_os = "linux")]
-use vst3::Steinberg::Linux::{IEventHandler, IRunLoop, IRunLoopTrait, ITimerHandler};
+use winit::raw_window_handle::RawWindowHandle;
 
 use crate::error::{Error, ToCodeExt, ToResultExt};
+#[cfg(target_os = "linux")]
+use vst3::Steinberg::Linux::{IEventHandler, IRunLoop, IRunLoopTrait, ITimerHandler};
 
 pub trait PlugFrame {
     fn resize_view(&self, _rect: ViewRect) -> Result<(), Error> {
@@ -25,7 +24,6 @@ pub(crate) struct PlugFrameWrapper {
     run_loop: crate::run_loop::RunLoop,
 }
 
-
 impl Drop for PlugFrameWrapper {
     fn drop(&mut self) {
         eprintln!("PlugFrameWrapper::drop");
@@ -33,24 +31,14 @@ impl Drop for PlugFrameWrapper {
 }
 
 impl PlugFrameWrapper {
-    #[cfg(not(target_os = "linux"))]
-    pub(crate) fn new(plug_frame: impl PlugFrame) -> Result<Self, Error> {
-        let plug_frame = Box::new(plug_frame);
-        Ok(Self { plug_frame })
-    }
-
-    #[cfg(target_os = "linux")]
     pub(crate) fn new(
         plug_frame: impl PlugFrame + 'static,
-        callback: impl Fn(crate::run_loop::MainThreadEvent) + Send + Sync + 'static,
+        #[cfg(target_os = "linux")] run_loop: crate::run_loop::RunLoop,
     ) -> Result<Self, Error> {
         let plug_frame = Box::new(plug_frame);
-        let run_loop = crate::run_loop::RunLoop::new(callback).map_err(|error| {
-            tracing::error!(%error, "failed to create run loop");
-            Error::Internal
-        })?;
         Ok(Self {
             plug_frame,
+            #[cfg(target_os = "linux")]
             run_loop,
         })
     }
@@ -60,9 +48,9 @@ impl IPlugFrameTrait for PlugFrameWrapper {
     unsafe fn resizeView(
         &self,
         _view: *mut IPlugView,
-        newSize: *mut ViewRect,
+        new_size: *mut ViewRect,
     ) -> vst3::Steinberg::tresult {
-        self.plug_frame.resize_view(*newSize).to_code()
+        self.plug_frame.resize_view(*new_size).to_code()
     }
 }
 

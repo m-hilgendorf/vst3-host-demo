@@ -9,15 +9,15 @@ use std::{
 use crate::{
     component::{ComponentHandler, ComponentHandlerWrapper},
     error::{Error, ToResultExt},
+    prelude::Host,
     util::ToRustString,
     view::{PlugFrame, PlugFrameWrapper, View},
 };
 use bitflags::bitflags;
 use vst3::{
-    com_scrape_types::SmartPtr,
     Class, ComPtr, ComWrapper,
     Steinberg::{
-        kResultFalse, kResultOk, kResultTrue, tresult, FUnknown, IBStream, IBStreamTrait,
+        kResultFalse, kResultOk, kResultTrue, tresult, IBStream, IBStreamTrait,
         IBStream_::IStreamSeekMode_,
         IPlugViewTrait,
         Vst::{
@@ -158,20 +158,19 @@ impl Editor {
     }
 
     /// Create the view object for this plugin.
-    #[cfg(target_os = "linux")]
-    pub fn create_view(
-        &self,
-        frame: impl PlugFrame + 'static,
-        callback: impl Fn(crate::run_loop::MainThreadEvent) + Send + Sync + 'static,
-    ) -> Result<View, Error> {
+    pub fn create_view(&self, frame: impl PlugFrame + 'static, host: &Host) -> Result<View, Error> {
         let view_type = c"editor";
         unsafe {
             let iplugview = self.editor.createView(view_type.as_ptr());
             let view: ComPtr<vst3::Steinberg::IPlugView> =
                 ComPtr::from_raw(iplugview).ok_or(Error::False)?;
-            let frame = ComWrapper::new(PlugFrameWrapper::new(frame, callback)?)
-                .to_com_ptr()
-                .unwrap();
+            let frame = ComWrapper::new(PlugFrameWrapper::new(
+                frame,
+                #[cfg(target_os = "linux")]
+                host.run_loop.clone(),
+            )?)
+            .to_com_ptr()
+            .unwrap();
             view.setFrame(frame.as_ptr()).as_result()?;
             std::mem::forget(frame);
             Ok(View::new(view))
@@ -226,7 +225,9 @@ impl Editor {
         .to_com_ptr()
         .unwrap();
         unsafe {
-            self.editor.setComponentHandler(wrapper.as_ptr()).as_result()?;
+            self.editor
+                .setComponentHandler(wrapper.as_ptr())
+                .as_result()?;
         };
         mem::forget(wrapper);
         Ok(())
