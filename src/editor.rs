@@ -76,7 +76,7 @@ impl Editor {
             editor,
             editor2,
             connection,
-            _marker: PhantomData::default(),
+            _marker: PhantomData,
         }
     }
 

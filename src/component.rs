@@ -74,12 +74,6 @@ pub enum WindowType {
     X11,
 }
 
-impl From<i32> for WindowType {
-    fn from(value: i32) -> Self {
-        value.try_into().unwrap()
-    }
-}
-
 pub(crate) struct ComponentHandlerWrapper {
     pub handler: Box<dyn ComponentHandler>,
 }

@@ -77,8 +77,8 @@ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 struct App {
     host: vst::Host,
     name: String,
-    _processor: vst::Processor,
-    _editor: vst::Editor,
+    processor: vst::Processor,
+    editor: vst::Editor,
     view: vst::View,
     window: Option<Window>,
 }
@@ -124,9 +124,12 @@ impl ApplicationHandler<vst::MainThreadEvent> for App {
 
     fn user_event(
         &mut self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
+        event_loop: &winit::event_loop::ActiveEventLoop,
         event: vst::MainThreadEvent,
     ) {
+        if event_loop.exiting() {
+            return;
+        }
         event.handle();
     }
 
@@ -135,6 +138,7 @@ impl ApplicationHandler<vst::MainThreadEvent> for App {
         self.view.removed();
         #[cfg(target_os = "linux")]
         self.host.stop_run_loop();
+        self.window.take();
     }
 }
 
@@ -215,19 +219,30 @@ fn main() {
 
     // Create the application.
     let name = plugin.name.to_owned();
-    drop(plugin);
     let mut app = App {
         host,
-        _processor: processor,
+        processor,
         name,
-        _editor: editor,
+        editor,
         view,
         window: None,
     };
 
     event_loop.run_app(&mut app).unwrap();
+    eprintln!("event loop over, ending.");
+    let App {
+        processor,
+        editor,
+        view,
+        ..
+    } = app;
+    drop(view);
+    eprintln!("dropped view.");
     SHUTDOWN.store(true, Ordering::Relaxed);
     processor_thread.join().ok();
+    processor.terminate().ok();
+    drop(editor);
+    drop(processor);
 }
 
 fn processor_call_sequence(processor: vst::Processor) {
@@ -289,7 +304,4 @@ fn processor_call_sequence(processor: vst::Processor) {
     while !SHUTDOWN.load(Ordering::Relaxed) {
         thread::sleep(Duration::from_millis(100));
     }
-
-    // Shutdown.
-    processor.terminate().ok();
 }

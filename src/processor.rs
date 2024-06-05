@@ -68,14 +68,16 @@ pub struct RoutingInfo {
 }
 
 #[repr(C)]
-struct InputParameterChanges<'a> {
+pub struct InputParameterChanges<'a> {
+    #[allow(dead_code)]
     vtbl: *const IParamValueQueueVtbl,
     points: &'a [(i32, f64)],
     id: u32,
 }
 
-struct OutputParameterChanges<'a> {
-    _vtbl: *const IParamValueQueueVtbl,
+pub struct OutputParameterChanges<'a> {
+    #[allow(dead_code)]
+    vtbl: *const IParamValueQueueVtbl,
     points: &'a mut [(i32, f64)],
     len: usize,
     id: u32,
@@ -673,7 +675,7 @@ impl<'a> OutputParameterChangesInterface<'a> {
 impl<'a> OutputParameterChanges<'a> {
     pub fn new(id: u32, points: &'a mut [(i32, f64)]) -> Self {
         Self {
-            _vtbl: &Self::VTBL as *const _,
+            vtbl: &Self::VTBL as *const _,
             len: 0,
             points,
             id,
@@ -739,7 +741,7 @@ impl<'a> OutputParameterChanges<'a> {
 const STACK_OBJECT_FUNKNOWN_VTBL: FUnknownVtbl = FUnknownVtbl {
     queryInterface: query_interface,
     addRef: add_ref,
-    release: release,
+    release,
 };
 
 unsafe extern "system" fn query_interface(

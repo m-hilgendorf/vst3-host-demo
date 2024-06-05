@@ -40,14 +40,20 @@ pub(crate) struct HostApplicationImpl {
     run_loop: RunLoop,
 }
 
-impl Builder {
-    /// Create a new, empty builder.
-    pub fn new() -> Self {
+impl Default for Builder {
+    fn default() -> Self {
         Self {
             name: None,
             default_search_paths: true,
             search_paths: Vec::new(),
         }
+    }
+}
+
+impl Builder {
+    /// Create a new, empty builder.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Set the name of the host, which will be reported to plugin instances.
@@ -84,7 +90,6 @@ impl Builder {
         #[cfg(target_os = "linux")] callback: impl Fn(MainThreadEvent) + Send + Sync + 'static,
     ) -> Host {
         let name = self.name.unwrap_or_default();
-        let _marker = PhantomData::default();
         let mut search_paths = if self.default_search_paths {
             Host::default_search_paths()
         } else {
@@ -95,10 +100,10 @@ impl Builder {
         let mut host = Host {
             name,
             #[cfg(target_os = "linux")]
-            run_loop: crate::run_loop::RunLoop::new(callback).unwrap(),
+            run_loop: crate::run_loop::RunLoop::new(Box::new(callback)).unwrap(),
             search_paths,
             scanned: Vec::new(),
-            _marker,
+            _marker: PhantomData,
         };
         host.rescan_plugins();
         host
@@ -114,7 +119,7 @@ impl Host {
                 paths.push(
                     PathBuf::from("/Users")
                         .join(username)
-                        .join("/Library/Audio/Plug-ins/VST3"),
+                        .join("Library/Audio/Plug-ins/VST3"),
                 );
             }
             paths.push("/Library/Audio/Plug-ins/VST3".into());
@@ -160,7 +165,7 @@ impl Host {
     /// Rescans the plugins. Removes any cached plugins.
     pub fn rescan_plugins(&mut self) {
         let mut scanned = vec![];
-        let mut stack = self.search_paths.iter().cloned().collect::<Vec<_>>();
+        let mut stack = self.search_paths.to_vec();
         while let Some(directory) = stack.pop() {
             {
                 let directory = directory.display();
@@ -198,7 +203,7 @@ impl Host {
     /// Scan a single path.
     pub fn scan(&mut self, path: impl AsRef<Path>) -> Result<(), Error> {
         let path = path.as_ref();
-        let scanned = ScannedPlugin::try_scan(path.as_ref())
+        let scanned = ScannedPlugin::try_scan(path)
             .map_err(|error| {
                 let path = path.display();
                 tracing::error!(%path, %error, "failed to scan plugin");
@@ -240,7 +245,7 @@ impl IHostApplicationTrait for HostApplicationImpl {
     unsafe fn getName(&self, name: *mut String128) -> tresult {
         let name_ = self.name.encode_utf16().take(128).enumerate();
         unsafe {
-            let ptr = (&mut *name).as_mut_ptr();
+            let ptr = (*name).as_mut_ptr();
             for (n, ch) in name_ {
                 *ptr.add(n) = ch as i16;
             }

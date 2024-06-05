@@ -1,20 +1,15 @@
-use std::{
-    mem::MaybeUninit,
-    os::raw::c_void,
-    sync::{Arc, Mutex},
-};
+use crate::error::{Error, ToCodeExt, ToResultExt};
+use std::{mem::MaybeUninit, os::raw::c_void};
+#[cfg(target_os = "linux")]
+use vst3::Steinberg::Linux::{IEventHandler, IRunLoop, IRunLoopTrait, ITimerHandler};
 use vst3::{
-    Class, ComPtr,
+    Class, ComPtr, ComRef,
     Steinberg::{
         kInvalidArgument, kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeX11EmbedWindowID,
         kResultOk, kResultTrue, IPlugFrame, IPlugFrameTrait, IPlugView, IPlugViewTrait, ViewRect,
     },
 };
 use winit::raw_window_handle::RawWindowHandle;
-
-use crate::error::{Error, ToCodeExt, ToResultExt};
-#[cfg(target_os = "linux")]
-use vst3::Steinberg::Linux::{IEventHandler, IRunLoop, IRunLoopTrait, ITimerHandler};
 
 pub trait PlugFrame {
     fn resize_view(&self, _rect: ViewRect) -> Result<(), Error> {
@@ -24,7 +19,6 @@ pub trait PlugFrame {
 
 pub(crate) struct PlugFrameWrapper {
     plug_frame: Box<dyn PlugFrame>,
-    fds: Arc<Mutex<Vec<f32>>>,
     #[cfg(target_os = "linux")]
     run_loop: crate::run_loop::RunLoop,
 }
@@ -39,10 +33,8 @@ impl PlugFrameWrapper {
         #[cfg(target_os = "linux")] run_loop: crate::run_loop::RunLoop,
     ) -> Result<Self, Error> {
         let plug_frame = Box::new(plug_frame);
-        let fds = Arc::new(Mutex::new(Vec::new()));
         Ok(Self {
             plug_frame,
-            fds,
             #[cfg(target_os = "linux")]
             run_loop,
         })
@@ -66,9 +58,10 @@ impl IRunLoopTrait for PlugFrameWrapper {
         handler: *mut IEventHandler,
         fd: vst3::Steinberg::Linux::FileDescriptor,
     ) -> vst3::Steinberg::tresult {
-        let Some(handler) = ComPtr::from_raw(handler) else {
+        let Some(handler) = ComRef::from_raw(handler) else {
             return kInvalidArgument;
         };
+        let handler = handler.to_com_ptr();
         self.run_loop
             .register_event_handler(handler, fd)
             .map_err(|error| {
@@ -94,9 +87,10 @@ impl IRunLoopTrait for PlugFrameWrapper {
         handler: *mut ITimerHandler,
         milliseconds: vst3::Steinberg::Linux::TimerInterval,
     ) -> vst3::Steinberg::tresult {
-        let Some(handler) = ComPtr::from_raw(handler) else {
+        let Some(handler) = ComRef::from_raw(handler) else {
             return kInvalidArgument;
         };
+        let handler = handler.to_com_ptr();
         self.run_loop
             .register_timer(handler, milliseconds)
             .map_err(|error| {

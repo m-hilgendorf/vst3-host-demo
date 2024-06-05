@@ -164,11 +164,11 @@ impl ScannedPlugin {
         }) else {
             return Ok(None);
         };
-        return Ok(Some(ScannedPlugin {
+        Ok(Some(ScannedPlugin {
             info,
             path: path.to_owned(),
             module: Arc::new(RwLock::new(Some(module))),
-        }));
+        }))
     }
 
     pub fn load(&self) -> Result<impl Deref<Target = Module> + '_, Error> {
@@ -200,7 +200,7 @@ impl ScannedPlugin {
                     .vendor
                     .as_ref()
                     .unwrap_or(&self.info.factory_info.vendor);
-                let version = info.version.as_ref().map(String::as_str);
+                let version = info.version.as_deref();
                 let category = &info.category;
                 let subcategories = &info.subcategories;
                 let path = &self.path;

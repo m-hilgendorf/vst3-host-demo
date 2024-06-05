@@ -35,6 +35,8 @@ pub struct Module {
     exit: ExitFn,
     pub(crate) factory: Option<ComPtr<IPluginFactory>>,
 }
+unsafe impl Send for Module {}
+unsafe impl Sync for Module {}
 
 impl fmt::Debug for Module {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
