@@ -1,4 +1,5 @@
 use crate::{error::ToCodeExt as _, plugin::ScannedPlugin, prelude::*};
+pub use run_loop::MainThreadEvent;
 use std::{
     marker::PhantomData,
     os::raw::c_void,
@@ -14,6 +15,9 @@ use vst3::{
     },
 };
 
+#[cfg(target_os = "linux")]
+pub(crate) mod run_loop;
+
 /// A builder type to instantiate a VST3 host.
 pub struct Builder {
     name: Option<String>,
@@ -28,7 +32,7 @@ pub struct Builder {
 pub struct Host {
     pub(crate) name: String,
     #[cfg(target_os = "linux")]
-    pub(crate) run_loop: crate::run_loop::RunLoop,
+    pub(crate) run_loop: run_loop::RunLoop,
     search_paths: Vec<PathBuf>,
     scanned: Vec<ScannedPlugin>,
     _marker: PhantomData<*mut ()>,
@@ -37,7 +41,7 @@ pub struct Host {
 pub(crate) struct HostApplicationImpl {
     name: String,
     #[cfg(target_os = "linux")]
-    run_loop: RunLoop,
+    run_loop: run_loop::RunLoop,
 }
 
 impl Default for Builder {
@@ -87,7 +91,7 @@ impl Builder {
     /// Create a new host instance.
     pub fn build(
         self,
-        #[cfg(target_os = "linux")] callback: impl Fn(MainThreadEvent) + Send + Sync + 'static,
+        #[cfg(target_os = "linux")] callback: impl Fn(run_loop::MainThreadEvent) + Send + Sync + 'static,
     ) -> Host {
         let name = self.name.unwrap_or_default();
         let mut search_paths = if self.default_search_paths {
@@ -100,7 +104,7 @@ impl Builder {
         let mut host = Host {
             name,
             #[cfg(target_os = "linux")]
-            run_loop: crate::run_loop::RunLoop::new(Box::new(callback)).unwrap(),
+            run_loop: run_loop::RunLoop::new(Box::new(callback)).unwrap(),
             search_paths,
             scanned: Vec::new(),
             _marker: PhantomData,

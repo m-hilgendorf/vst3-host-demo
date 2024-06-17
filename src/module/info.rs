@@ -12,14 +12,18 @@ use vst3::Steinberg::{
 
 use crate::{error::Error, util::parse_class_id};
 
+/// Deserialization of a plugin's moduleinfo.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub struct ModuleInfo {
+pub struct Info {
     pub classes: Vec<Class>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+
     #[serde(rename = "Factory Info")]
     pub factory_info: FactoryInfo,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -146,12 +150,12 @@ impl From<i32> for FactoryFlags {
 
 #[cfg(test)]
 mod tests {
-    use super::ModuleInfo;
+    use super::Info;
 
     #[test]
     fn parse() {
-        let moduleinfo_json = include_str!("../tests/moduleinfo.json");
-        let info: ModuleInfo = json5::from_str(&moduleinfo_json).unwrap();
+        let moduleinfo_json = include_str!("../../tests/moduleinfo.json");
+        let info: Info = json5::from_str(&moduleinfo_json).unwrap();
         println!("{info:#?}");
     }
 }

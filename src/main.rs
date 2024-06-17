@@ -83,7 +83,7 @@ struct App {
     window: Option<Window>,
 }
 
-impl ApplicationHandler<vst::MainThreadEvent> for App {
+impl ApplicationHandler<vst3_host::host::MainThreadEvent> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -125,7 +125,7 @@ impl ApplicationHandler<vst::MainThreadEvent> for App {
     fn user_event(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
-        event: vst::MainThreadEvent,
+        event: vst3_host::host::MainThreadEvent,
     ) {
         if event_loop.exiting() {
             return;
@@ -134,7 +134,6 @@ impl ApplicationHandler<vst::MainThreadEvent> for App {
     }
 
     fn exiting(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        eprintln!("stopped event loop");
         self.view.removed();
         #[cfg(target_os = "linux")]
         self.host.stop_run_loop();

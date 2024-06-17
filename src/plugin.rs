@@ -1,8 +1,10 @@
 use crate::{
     editor::Editor,
     error::{Error, ToResultExt},
-    module::Module,
-    module_info::{ModuleInfo, CID},
+    module::{
+        info::{Info, CID},
+        Module,
+    },
     processor::Processor,
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +53,7 @@ pub struct Plugin<'a> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ScannedPlugin {
-    pub(crate) info: ModuleInfo,
+    pub(crate) info: Info,
     pub(crate) path: PathBuf,
     #[serde(default, skip)]
     pub(crate) module: Arc<RwLock<Option<Module>>>,

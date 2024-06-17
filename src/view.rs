@@ -20,7 +20,7 @@ pub trait PlugFrame {
 pub(crate) struct PlugFrameWrapper {
     plug_frame: Box<dyn PlugFrame>,
     #[cfg(target_os = "linux")]
-    run_loop: crate::run_loop::RunLoop,
+    run_loop: crate::host::run_loop::RunLoop,
 }
 
 impl Drop for PlugFrameWrapper {
@@ -30,7 +30,7 @@ impl Drop for PlugFrameWrapper {
 impl PlugFrameWrapper {
     pub(crate) fn new(
         plug_frame: impl PlugFrame + 'static,
-        #[cfg(target_os = "linux")] run_loop: crate::run_loop::RunLoop,
+        #[cfg(target_os = "linux")] run_loop: crate::host::run_loop::RunLoop,
     ) -> Result<Self, Error> {
         let plug_frame = Box::new(plug_frame);
         Ok(Self {

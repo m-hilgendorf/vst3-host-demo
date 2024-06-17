@@ -1,14 +1,15 @@
 use crate::{
     error::{Error, ToResultExt},
-    module_info::{Class, FactoryInfo, ModuleInfo, CID},
     util::ToRustString,
 };
 use core::fmt;
+use info::{Class, FactoryInfo, Info, CID};
 use std::{mem::MaybeUninit, os::raw::c_void};
 use vst3::{
     ComPtr,
     Steinberg::{IPluginFactory, IPluginFactory2, IPluginFactory2Trait, IPluginFactoryTrait},
 };
+pub mod info;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -49,7 +50,7 @@ impl Module {
         self.factory.as_ref().unwrap().clone()
     }
 
-    pub fn info(&self) -> Result<ModuleInfo, Error> {
+    pub fn info(&self) -> Result<Info, Error> {
         let factory = self.factory();
         unsafe {
             // Load the factory info.
@@ -115,7 +116,7 @@ impl Module {
                 }
             }
 
-            Ok(ModuleInfo {
+            Ok(Info {
                 classes,
                 name: None,
                 factory_info,
